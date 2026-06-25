@@ -24,5 +24,3 @@ dependencyResolutionManagement {
 
 rootProject.name = "Appilot"
 include(":app")
-include(":spike")
- 
