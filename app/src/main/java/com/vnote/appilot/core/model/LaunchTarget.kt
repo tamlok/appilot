@@ -31,4 +31,19 @@ sealed interface LaunchTarget {
         val intentUri: String,
         val fallbackPackage: String,
     ) : LaunchTarget
+
+    /**
+     * Reopen a pinned launcher shortcut by replaying the user's own gesture
+     * (home -> swipe to the page -> tap the icon) via the accessibility service.
+     *
+     * This is the only way a non-launcher app can reach a foreign app's pinned
+     * shortcut, which `LauncherApps` won't expose without the default-launcher
+     * role. [expectedPackage] is the app the macro lands, used for readiness.
+     */
+    @Serializable
+    data class LauncherGesture(
+        val steps: List<GestureStep>,
+        val expectedPackage: String,
+        val label: String = "",
+    ) : LaunchTarget
 }

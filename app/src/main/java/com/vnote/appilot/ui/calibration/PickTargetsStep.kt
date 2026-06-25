@@ -38,6 +38,7 @@ fun launchTargetLabel(target: LaunchTarget): String = when (target) {
     is LaunchTarget.App -> if (target.packageName.isBlank()) "(none)" else target.packageName
     is LaunchTarget.DeepLink -> target.uri
     is LaunchTarget.CapturedShortcut -> "shortcut: ${target.fallbackPackage}"
+    is LaunchTarget.LauncherGesture -> "desktop: ${target.label.ifBlank { target.expectedPackage }}"
 }
 
 /**

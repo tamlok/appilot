@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import com.vnote.appilot.actuate.RegulatorAccessibilityService
 import com.vnote.appilot.core.model.LaunchTarget
 
 /** Which dispatch path [Launcher.launch] actually took, for QA + logging. */
@@ -19,6 +20,9 @@ enum class LaunchOutcome {
 
     /** `DeepLink` target launched via a raw `VIEW` intent (tier 3). */
     DEEP_LINK,
+
+    /** `LauncherGesture` macro kicked off via the accessibility service. */
+    GESTURE,
 
     /** Nothing launchable: no fallback intent / package not installed. */
     FAILED,
@@ -44,6 +48,7 @@ enum class LaunchOutcome {
 class Launcher(
     private val starter: (Intent) -> Unit,
     private val launchIntentForPackage: (String) -> Intent?,
+    private val playGesture: (LaunchTarget.LauncherGesture) -> Boolean = { false },
 ) {
 
     /** Dispatches [target] per type, returning the path taken. */
@@ -51,6 +56,8 @@ class Launcher(
         is LaunchTarget.App -> launchPackage(target.packageName, LaunchOutcome.PACKAGE)
         is LaunchTarget.DeepLink -> launchDeepLink(target.uri)
         is LaunchTarget.CapturedShortcut -> launchCaptured(target)
+        is LaunchTarget.LauncherGesture ->
+            if (playGesture(target)) LaunchOutcome.GESTURE else LaunchOutcome.FAILED
     }
 
     private fun launchCaptured(target: LaunchTarget.CapturedShortcut): LaunchOutcome {
@@ -89,6 +96,15 @@ class Launcher(
             },
             launchIntentForPackage = { pkg ->
                 context.packageManager.getLaunchIntentForPackage(pkg)
+            },
+            playGesture = { target ->
+                val service = RegulatorAccessibilityService.instance
+                if (service == null) {
+                    false
+                } else {
+                    service.playMacro(target.steps) {}
+                    true
+                }
             },
         )
     }

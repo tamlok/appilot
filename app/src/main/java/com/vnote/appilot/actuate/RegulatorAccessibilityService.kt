@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import com.vnote.appilot.core.model.GestureStep
 import com.vnote.appilot.core.model.RatioRect
 
 /**
@@ -73,6 +74,57 @@ class RegulatorAccessibilityService : AccessibilityService(), Tapper {
         if (!dispatchGesture(gesture, callback, mainHandler)) onDone(false)
     }
 
+    /**
+     * Replays a desktop-open [steps] macro sequentially: home, swipe(s), tap,
+     * each followed by a settle delay so the launcher page animation and the
+     * target launch can complete before the next step. Calls [onDone] with
+     * `false` on the first failed step (so callers never hang), `true` when all
+     * steps complete.
+     */
+    fun playMacro(steps: List<GestureStep>, onDone: (Boolean) -> Unit) {
+        val (width, height) = realDisplaySize()
+        fun px(x: Double, y: Double): Pair<Float, Float> =
+            (x * width).toFloat().coerceIn(0f, (width - 1).toFloat()) to
+                (y * height).toFloat().coerceIn(0f, (height - 1).toFloat())
+
+        fun run(i: Int) {
+            if (i >= steps.size) { onDone(true); return }
+            when (val step = steps[i]) {
+                is GestureStep.Home -> {
+                    val ok = performGlobalAction(GLOBAL_ACTION_HOME)
+                    if (!ok) { onDone(false); return }
+                    mainHandler.postDelayed({ run(i + 1) }, HOME_SETTLE_MS)
+                }
+                is GestureStep.Swipe -> {
+                    val (fx, fy) = px(step.from.x.value, step.from.y.value)
+                    val (tx, ty) = px(step.to.x.value, step.to.y.value)
+                    stroke(fx, fy, tx, ty, step.durationMs) { ok ->
+                        if (!ok) onDone(false) else mainHandler.postDelayed({ run(i + 1) }, SWIPE_SETTLE_MS)
+                    }
+                }
+                is GestureStep.Tap -> {
+                    val (x, y) = px(step.spot.x.value, step.spot.y.value)
+                    stroke(x, y, x + 1f, y + 1f, step.durationMs) { ok ->
+                        if (!ok) onDone(false) else mainHandler.postDelayed({ run(i + 1) }, TAP_SETTLE_MS)
+                    }
+                }
+            }
+        }
+        run(0)
+    }
+
+    private fun stroke(fx: Float, fy: Float, tx: Float, ty: Float, durationMs: Long, onDone: (Boolean) -> Unit) {
+        val path = Path().apply { moveTo(fx, fy); lineTo(tx, ty) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, durationMs.coerceAtLeast(1L)))
+            .build()
+        val callback = object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) = onDone(true)
+            override fun onCancelled(gestureDescription: GestureDescription?) = onDone(false)
+        }
+        if (!dispatchGesture(gesture, callback, mainHandler)) onDone(false)
+    }
+
     private fun realDisplaySize(): Pair<Int, Int> {
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val bounds = wm.currentWindowMetrics.bounds
@@ -82,6 +134,10 @@ class RegulatorAccessibilityService : AccessibilityService(), Tapper {
     companion object {
         /** Brief press; long enough to register as a click, short enough to feel instant. */
         private const val TAP_DURATION_MS = 60L
+
+        private const val HOME_SETTLE_MS = 700L
+        private const val SWIPE_SETTLE_MS = 600L
+        private const val TAP_SETTLE_MS = 300L
 
         private val mainHandler = Handler(Looper.getMainLooper())
 

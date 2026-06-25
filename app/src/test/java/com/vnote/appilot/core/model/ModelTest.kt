@@ -46,6 +46,15 @@ class ModelTest {
                 intentUri = "intent://#Intent;component=pkg/.Activity;end",
                 fallbackPackage = "com.example.actuator",
             ),
+            LaunchTarget.LauncherGesture(
+                steps = listOf(
+                    GestureStep.Home,
+                    GestureStep.Swipe(RatioPoint(Ratio(0.88), Ratio(0.5)), RatioPoint(Ratio(0.14), Ratio(0.5))),
+                    GestureStep.Tap(RatioPoint(Ratio(0.16), Ratio(0.24))),
+                ),
+                expectedPackage = "com.example.device",
+                label = "Bedroom sensor",
+            ),
         )
 
         for (variant in variants) {
@@ -75,6 +84,7 @@ class ModelTest {
             is LaunchTarget.App -> "app:${target.packageName}"
             is LaunchTarget.DeepLink -> "link:${target.uri}"
             is LaunchTarget.CapturedShortcut -> "shortcut:${target.fallbackPackage}"
+            is LaunchTarget.LauncherGesture -> "gesture:${target.expectedPackage}"
         }
         assertEquals("app:p", describe(LaunchTarget.App("p")))
     }

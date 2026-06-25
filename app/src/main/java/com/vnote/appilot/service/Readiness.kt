@@ -64,6 +64,7 @@ object Readiness {
         is LaunchTarget.DeepLink -> null
         is LaunchTarget.CapturedShortcut -> componentClassOf(target.intentUri)
             ?: target.fallbackPackage.ifBlank { null }
+        is LaunchTarget.LauncherGesture -> target.expectedPackage.ifBlank { null }
     }
 
     private fun componentClassOf(intentUri: String): String? = runCatching {
