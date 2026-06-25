@@ -18,7 +18,7 @@ internal data class Slot(val x0: Int, val y0: Int, val x1: Int, val y1: Int) {
 /**
  * Threshold to a boolean ink mask. Background is estimated from the border;
  * polarity (dark-on-light vs light-on-dark) is auto-detected so the same code
- * reads Tuya's dark digits on white and a vendor's light digits on dark.
+ * reads dark digits on a light background and light digits on a dark background.
  */
 internal fun binarize(img: GrayImage): BooleanArray {
     val w = img.width

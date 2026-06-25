@@ -6,8 +6,8 @@ import com.vnote.appilot.core.model.ReadRegion
 /**
  * Accessibility node-text fast path for the Read layer.
  *
- * Some source screens draw the temperature as a real text node (unlike the Tuya
- * WebView graphic). When the marked [ReadRegion] overlaps such a node and its
+ * Some source screens draw the temperature as a real text node (unlike a
+ * WebView-drawn graphic). When the marked [ReadRegion] overlaps such a node and its
  * `text` parses as a number, we can read the value directly — no MediaProjection
  * screenshot and no template matching required. Otherwise we SIGNAL a fallback so
  * the caller runs the (heavier) `TemplateMatcher` pipeline.
