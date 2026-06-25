@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only manifest overlay. Registers the actuate-layer QA harness Activity so
+  it exists ONLY in debug builds and never reaches the release/product surface.
+  Merged into the main manifest for the debug variant.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <activity
+            android:name=".actuate.harness.TapHarnessActivity"
+            android:exported="true"
+            android:label="Tap Harness"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
+    </application>
+
+</manifest>

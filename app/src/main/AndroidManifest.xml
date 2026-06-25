@@ -60,6 +60,24 @@
             android:name=".read.projection.ScreenCaptureService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
+
+        <!--
+          Actuate layer (Wave 4): coordinate-only gesture tapper. The system binds
+          it, so it REQUIRES the BIND_ACCESSIBILITY_SERVICE permission; the
+          meta-data points at the config that sets canPerformGestures="true".
+        -->
+        <service
+            android:name=".actuate.RegulatorAccessibilityService"
+            android:exported="false"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
     </application>
 
 </manifest>

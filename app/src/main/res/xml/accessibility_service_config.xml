@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Actuate layer (Wave 4) config for RegulatorAccessibilityService.
+
+  canPerformGestures="true" is the load-bearing flag: it permits the
+  coordinate-only dispatchGesture taps that the actuate layer relies on. We do
+  NOT inspect or act on accessibility nodes (the AC buttons are drawn inside a
+  WebView and expose no reliable node IDs), so feedback is generic and the event
+  surface is kept minimal.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canPerformGestures="true"
+    android:notificationTimeout="100" />
