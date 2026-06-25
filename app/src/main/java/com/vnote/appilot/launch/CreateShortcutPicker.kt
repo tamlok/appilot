@@ -1,8 +1,10 @@
 package com.vnote.appilot.launch
 
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.result.contract.ActivityResultContract
 import com.vnote.appilot.core.model.LaunchTarget
@@ -22,14 +24,49 @@ import com.vnote.appilot.core.model.LaunchTarget
  */
 object CreateShortcutPicker {
 
+    data class ShortcutCreator(val component: ComponentName, val label: String)
+
     /**
-     * An [ActivityResultContract] launching `ACTION_CREATE_SHORTCUT` and parsing
-     * the result into a storable [LaunchTarget.CapturedShortcut] (or `null` when
-     * the user cancels or no shortcut intent comes back).
+     * Enumerates the installed activities that handle `ACTION_CREATE_SHORTCUT`,
+     * using the scoped `<queries>` visibility (NOT `QUERY_ALL_PACKAGES`).
+     *
+     * We resolve the list ourselves and later launch an EXPLICIT-component
+     * intent so we never trigger the system disambiguation chooser
+     * (`ResolverActivity`) — that chooser can crash on a malformed launcher
+     * icon, taking the flow down with it. Bypassing it is both more robust and
+     * fully deterministic.
      */
-    class Contract : ActivityResultContract<Unit, LaunchTarget.CapturedShortcut?>() {
-        override fun createIntent(context: Context, input: Unit): Intent =
-            Intent(Intent.ACTION_CREATE_SHORTCUT)
+    fun shortcutCreatorActivities(context: Context): List<ShortcutCreator> {
+        val pm = context.packageManager
+        val intent = Intent(Intent.ACTION_CREATE_SHORTCUT)
+        val resolved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(0L))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.queryIntentActivities(intent, 0)
+        }
+        return resolved
+            .mapNotNull { ri ->
+                val ai = ri.activityInfo ?: return@mapNotNull null
+                ShortcutCreator(
+                    ComponentName(ai.packageName, ai.name),
+                    ri.loadLabel(pm).toString().ifBlank { ai.packageName },
+                )
+            }
+            .distinctBy { it.component }
+            .sortedBy { it.label.lowercase() }
+    }
+
+    /**
+     * An [ActivityResultContract] launching `ACTION_CREATE_SHORTCUT` targeted at
+     * an EXPLICIT [ComponentName] (chosen from [shortcutCreatorActivities]) and
+     * parsing the result into a storable [LaunchTarget.CapturedShortcut] (or
+     * `null` when the user cancels or no shortcut intent comes back). Targeting
+     * an explicit component avoids the fragile system chooser entirely.
+     */
+    class Contract : ActivityResultContract<ComponentName, LaunchTarget.CapturedShortcut?>() {
+        override fun createIntent(context: Context, input: ComponentName): Intent =
+            Intent(Intent.ACTION_CREATE_SHORTCUT).setComponent(input)
 
         override fun parseResult(
             resultCode: Int,

@@ -1,5 +1,7 @@
 package com.vnote.appilot.ui.calibration
 
+import android.content.ActivityNotFoundException
+import android.util.Log
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -48,6 +50,8 @@ fun PickTargetsStep(viewModel: CalibrationViewModel, modifier: Modifier = Modifi
     val context = LocalContext.current
     var role by remember { mutableStateOf(Role.SOURCE) }
     val apps = remember { AppPicker.from(context).installedLauncherApps() }
+    val creators = remember { CreateShortcutPicker.shortcutCreatorActivities(context) }
+    var showCreators by remember { mutableStateOf(false) }
 
     val sourceShortcut = rememberLauncherForActivityResult(CreateShortcutPicker.Contract()) {
         it?.let(viewModel::setSource)
@@ -71,9 +75,41 @@ fun PickTargetsStep(viewModel: CalibrationViewModel, modifier: Modifier = Modifi
             RoleChoice("Actuator", role == Role.ACTUATOR, "role_actuator") { role = Role.ACTUATOR }
         }
         Button(
-            onClick = { if (role == Role.SOURCE) sourceShortcut.launch(Unit) else actuatorShortcut.launch(Unit) },
+            onClick = { showCreators = !showCreators },
             modifier = Modifier.testTag("captureShortcut"),
-        ) { Text("Capture shortcut") }
+        ) { Text(if (showCreators) "Hide shortcut apps" else "Capture shortcut") }
+
+        if (showCreators) {
+            if (creators.isEmpty()) {
+                Text(
+                    "No shortcut-capable apps found",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(vertical = 8.dp),
+                )
+            } else {
+                creators.forEach { creator ->
+                    Text(
+                        creator.label,
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showCreators = false
+                                val launcher = if (role == Role.SOURCE) sourceShortcut else actuatorShortcut
+                                try {
+                                    launcher.launch(creator.component)
+                                } catch (e: ActivityNotFoundException) {
+                                    Log.w("PickTargets", "Shortcut creator not launchable: ${creator.component}", e)
+                                } catch (e: SecurityException) {
+                                    Log.w("PickTargets", "Shortcut creator not exported: ${creator.component}", e)
+                                }
+                            }
+                            .testTag("creator_${creator.component.packageName}")
+                            .padding(vertical = 8.dp),
+                    )
+                }
+            }
+        }
 
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
         Text("Apps", style = MaterialTheme.typography.titleMedium)
