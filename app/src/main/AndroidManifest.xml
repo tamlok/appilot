@@ -60,6 +60,14 @@
             </intent-filter>
         </activity>
 
+        <!-- Calibration UI (Wave 7): hosts the source/actuator wiring flow. -->
+        <activity
+            android:name=".ui.calibration.CalibrationActivity"
+            android:exported="false"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.Appilot"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- Read layer: hosts the system MediaProjection consent dialog. -->
         <activity
             android:name=".read.projection.ProjectionConsentActivity"
