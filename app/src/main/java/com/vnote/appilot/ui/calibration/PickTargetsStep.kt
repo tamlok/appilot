@@ -1,6 +1,8 @@
 package com.vnote.appilot.ui.calibration
 
 import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.provider.Settings
 import android.util.Log
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +29,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.activity.compose.rememberLauncherForActivityResult
+import com.vnote.appilot.actuate.RegulatorAccessibilityService
 import com.vnote.appilot.core.model.LaunchTarget
 import com.vnote.appilot.launch.AppPicker
 import com.vnote.appilot.launch.CreateShortcutPicker
@@ -53,6 +56,7 @@ fun PickTargetsStep(viewModel: CalibrationViewModel, modifier: Modifier = Modifi
     val apps = remember { AppPicker.from(context).installedLauncherApps() }
     val creators = remember { CreateShortcutPicker.shortcutCreatorActivities(context) }
     var showCreators by remember { mutableStateOf(false) }
+    var recordStatus by remember { mutableStateOf("") }
 
     val sourceShortcut = rememberLauncherForActivityResult(CreateShortcutPicker.Contract()) {
         it?.let(viewModel::setSource)
@@ -75,6 +79,33 @@ fun PickTargetsStep(viewModel: CalibrationViewModel, modifier: Modifier = Modifi
             RoleChoice("Source", role == Role.SOURCE, "role_source") { role = Role.SOURCE }
             RoleChoice("Actuator", role == Role.ACTUATOR, "role_actuator") { role = Role.ACTUATOR }
         }
+
+        Button(
+            onClick = {
+                val service = RegulatorAccessibilityService.instance
+                if (service == null) {
+                    recordStatus = "Enable the AC-Regulator accessibility service, then retry."
+                    runCatching {
+                        context.startActivity(
+                            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }.onFailure { Log.w("PickTargets", "cannot open a11y settings", it) }
+                } else {
+                    val target = role
+                    recordStatus = "Recording… open your device's desktop shortcut now."
+                    service.startRecording { gesture ->
+                        if (target == Role.SOURCE) viewModel.setSource(gesture) else viewModel.setActuator(gesture)
+                        recordStatus = "Captured ${gesture.expectedPackage} (${gesture.steps.size} steps)."
+                    }
+                }
+            },
+            modifier = Modifier.testTag("recordDesktop"),
+        ) { Text("Record desktop open") }
+        if (recordStatus.isNotBlank()) {
+            Text(recordStatus, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
+        }
+
         Button(
             onClick = { showCreators = !showCreators },
             modifier = Modifier.testTag("captureShortcut"),
