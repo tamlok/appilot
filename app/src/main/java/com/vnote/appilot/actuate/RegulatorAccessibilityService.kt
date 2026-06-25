@@ -5,13 +5,11 @@ import android.accessibilityservice.GestureDescription
 import android.content.Context
 import android.content.Intent
 import android.graphics.Path
-import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import com.vnote.appilot.core.model.GestureStep
-import com.vnote.appilot.core.model.LaunchTarget
 import com.vnote.appilot.core.model.RatioRect
 
 /**
@@ -30,58 +28,13 @@ import com.vnote.appilot.core.model.RatioRect
  */
 class RegulatorAccessibilityService : AccessibilityService(), Tapper {
 
-    @Volatile
-    private var recorder: MacroRecorder? = null
-
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        val rec = recorder ?: return
-        event ?: return
-        when (event.eventType) {
-            AccessibilityEvent.TYPE_VIEW_SCROLLED ->
-                rec.onScrolled(toRightPage = event.scrollDeltaX >= 0)
-
-            AccessibilityEvent.TYPE_VIEW_CLICKED -> {
-                val node = event.source ?: return
-                val rect = Rect()
-                node.getBoundsInScreen(rect)
-                val (width, height) = realDisplaySize()
-                if (width > 0 && height > 0) {
-                    rec.onClicked(
-                        event.packageName?.toString().orEmpty(),
-                        rect.exactCenterX().toDouble() / width,
-                        rect.exactCenterY().toDouble() / height,
-                    )
-                }
-            }
-
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ->
-                rec.onWindowState(event.packageName?.toString().orEmpty(), packageName)
-        }
-    }
-
-    /**
-     * Arms a [MacroRecorder] and jumps to the launcher so the user can
-     * demonstrate opening their device shortcut. [onComplete] fires once on the
-     * main thread when the demonstration lands a non-launcher app.
-     */
-    fun startRecording(onComplete: (LaunchTarget.LauncherGesture) -> Unit) {
-        recorder = MacroRecorder { gesture ->
-            mainHandler.post {
-                recorder = null
-                onComplete(gesture)
-            }
-        }
-        performGlobalAction(GLOBAL_ACTION_HOME)
-    }
-
-    fun stopRecording() {
-        recorder = null
-    }
+    // No node inspection: this service taps/swipes by coordinate only.
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
 
     override fun onInterrupt() = Unit
 

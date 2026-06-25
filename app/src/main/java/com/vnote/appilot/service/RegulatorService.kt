@@ -19,6 +19,7 @@ import com.vnote.appilot.core.model.AcAction
 import com.vnote.appilot.core.model.RegulatorConfig
 import com.vnote.appilot.core.store.ConfigStore
 import com.vnote.appilot.core.store.TemplateStore
+import com.vnote.appilot.launch.Presets
 import com.vnote.appilot.decide.RegulatorAction
 import com.vnote.appilot.launch.Launcher
 import com.vnote.appilot.read.digits.TemplateMatcher
@@ -67,7 +68,7 @@ class RegulatorService : Service() {
     }
 
     private fun runCycleThenReschedule() {
-        val config = runBlocking { ConfigStore(applicationContext).load() } ?: ConfigStore.DEFAULT
+        val config = runBlocking { ConfigStore(applicationContext).load() } ?: Presets.defaultConfig()
         try {
             if (!screenReady()) {
                 lastCycleResult = CycleResult.SourceUnavailable

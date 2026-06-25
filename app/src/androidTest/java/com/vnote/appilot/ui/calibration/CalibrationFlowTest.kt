@@ -12,9 +12,9 @@ import androidx.compose.ui.test.swipe
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.vnote.appilot.core.model.AcAction
-import com.vnote.appilot.core.model.LaunchTarget
 import com.vnote.appilot.core.model.RegulatorConfig
 import com.vnote.appilot.core.store.ConfigStore
+import com.vnote.appilot.launch.Presets
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -45,7 +45,6 @@ class CalibrationFlowTest {
 
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
     private val store = ConfigStore(context)
-    private val pkg = context.packageName
 
     @Before
     fun setUp() = runBlocking {
@@ -61,10 +60,8 @@ class CalibrationFlowTest {
 
     @Test
     fun configuresPairFromScratch_persistsExactlyWhatWasEntered() {
-        // Step (a) — targets: assign this app to both roles via AppPicker.
-        rule.onNodeWithTag("app_$pkg").performScrollTo().performClick()
-        rule.onNodeWithTag("role_actuator").performScrollTo().performClick()
-        rule.onNodeWithTag("app_$pkg").performScrollTo().performClick()
+        // Step (a) — targets are a fixed preset (Tuya source + Haier actuator),
+        // shown read-only; nothing to pick, just advance.
         rule.onNodeWithTag("nextButton").performClick()
 
         // Step (b) — read region: capture (fixture) then drag a rectangle.
@@ -102,8 +99,8 @@ class CalibrationFlowTest {
         assertEquals(entered, reloaded)
 
         // misleading_success probe: assert the real field values, not just save().
-        assertEquals(LaunchTarget.App(pkg), reloaded!!.source)
-        assertEquals(LaunchTarget.App(pkg), reloaded.actuator)
+        assertEquals(Presets.tuyaSource(), reloaded!!.source)
+        assertEquals(Presets.haierActuator(), reloaded.actuator)
         assertEquals(19.0, reloaded.band.lowC, 0.0)
         assertEquals(25.0, reloaded.band.highC, 0.0)
         assertEquals(0.5, reloaded.step, 0.0)

@@ -3,15 +3,12 @@
   Config for RegulatorAccessibilityService.
 
   canPerformGestures="true" is load-bearing: it permits the coordinate-only
-  dispatchGesture taps/swipes the actuate + desktop-replay layers rely on.
-  typeViewClicked/typeViewScrolled + canRetrieveWindowContent are only consumed
-  while RECORDING a desktop-open macro (capturing the icon tap's node bounds and
-  each launcher page swipe); they are inert during normal regulation.
+  dispatchGesture taps + the home->swipe->tap desktop replay. No node inspection
+  is done, so the event surface is kept minimal.
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged|typeViewClicked|typeViewScrolled"
+    android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagDefault"
     android:canPerformGestures="true"
-    android:canRetrieveWindowContent="true"
     android:notificationTimeout="100" />

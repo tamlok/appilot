@@ -14,6 +14,7 @@ import com.vnote.appilot.core.model.TapTarget
 import com.vnote.appilot.core.model.TempBand
 import com.vnote.appilot.core.store.ConfigStore
 import com.vnote.appilot.core.store.TemplateStore
+import com.vnote.appilot.launch.Presets
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -38,8 +39,8 @@ class CalibrationViewModel(
     private val configStore: ConfigStore = ConfigStore(appContext),
     private val templateStore: TemplateStore = TemplateStore(appContext),
 ) {
-    /** The in-progress config; starts from the store's sensible DEFAULT. */
-    var config by mutableStateOf(ConfigStore.DEFAULT)
+    /** The in-progress config; starts from the hardcoded Tuya/Haier preset. */
+    var config by mutableStateOf(Presets.defaultConfig())
         private set
 
     /** Last captured screenshot used to mark regions/targets, or null. */
