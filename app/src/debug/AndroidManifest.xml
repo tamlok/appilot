@@ -12,6 +12,24 @@
             android:exported="true"
             android:label="Tap Harness"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
+
+        <!--
+          Orchestration-layer (Wave 6) QA harness pair. Explicit, exported
+          components so a CapturedShortcut/explicit-component LaunchTarget can
+          replay them like a real vendor screen. HarnessSourceActivity draws a
+          settable temperature graphic (read via projection+template);
+          HarnessAcActivity counts real taps.
+        -->
+        <activity
+            android:name=".service.harness.HarnessSourceActivity"
+            android:exported="true"
+            android:label="Harness Source"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
+        <activity
+            android:name=".service.harness.HarnessAcActivity"
+            android:exported="true"
+            android:label="Harness AC"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
     </application>
 
 </manifest>
