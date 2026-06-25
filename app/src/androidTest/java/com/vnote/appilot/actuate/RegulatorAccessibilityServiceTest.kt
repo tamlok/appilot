@@ -1,9 +1,5 @@
 package com.vnote.appilot.actuate
 
-import android.app.UiAutomation
-import android.content.Intent
-import android.os.ParcelFileDescriptor
-import android.os.SystemClock
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.vnote.appilot.actuate.harness.TapHarnessActivity
@@ -21,68 +17,36 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Instrumented proof of the actuate-layer coordinate tapper on a real device
- * (emulator-5554, Android 15).
- *
- * Enabling flow: the test grants ACCESS_RESTRICTED_SETTINGS (else Android 13+
- * silently drops the enabled_accessibility_services write for a sideloaded app),
- * writes the service component + accessibility_enabled, waits for
- * [RegulatorAccessibilityService.instance], launches the full-screen
- * [TapHarnessActivity], and calls [Tapper.tap] over a rect covering the button.
- *
- * CRITICAL: the instrumentation's [UiAutomation] suppresses ALL other
- * accessibility services by default, so the service can NEVER bind unless the
- * connection is taken with FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES. The whole
- * test therefore routes shell access through that one flagged UiAutomation and
- * never touches UiDevice (whose no-arg getUiAutomation() would flip suppression
- * back on).
+ * (emulator-5554, Android 15). [A11yEnabler] handles enabling + binding the
+ * service into the test process; this test launches the full-screen
+ * [TapHarnessActivity] and calls [Tapper.tap] over a rect covering the button.
  *
  * misleading_success guard: success is asserted on the harness button's REAL
  * onClick counter ([TapHarnessActivity.clicks]) — NOT merely on the gesture's
- * own completion callback. The completion callback is separately asserted to
+ * own completion callback. The completion callback is asserted separately to
  * prove the cancel/resume seam (a cancelled gesture would report false).
  */
 @RunWith(AndroidJUnit4::class)
 class RegulatorAccessibilityServiceTest {
 
-    private val instrumentation = InstrumentationRegistry.getInstrumentation()
-    private val context = instrumentation.targetContext
-    private val uiAutomation: UiAutomation =
-        instrumentation.getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
-
-    private val component =
-        "${context.packageName}/${RegulatorAccessibilityService::class.java.name}"
+    private val enabler = A11yEnabler(InstrumentationRegistry.getInstrumentation())
 
     @Before
-    fun wakeAndAllowRestrictedSettings() {
-        shell("svc power stayon true")
-        shell("input keyevent KEYCODE_WAKEUP")
-        shell("wm dismiss-keyguard")
-        shell("appops set ${context.packageName} ACCESS_RESTRICTED_SETTINGS allow")
-    }
+    fun setUp() = enabler.prepareDevice()
 
     @After
-    fun disableService() {
-        // Cleanup receipt: disable the a11y service so no enabled service or
-        // bound instance survives the run, and drop the harness from the top.
-        shell("settings put secure accessibility_enabled 0")
-        shell("settings delete secure enabled_accessibility_services")
-        shell("appops set ${context.packageName} ACCESS_RESTRICTED_SETTINGS default")
-        shell("input keyevent KEYCODE_HOME")
-        shell("svc power stayon false")
-    }
+    fun tearDown() = enabler.teardown()
 
     @Test
     fun tap_firesRealClickHandlerOnHarnessButton() {
-        val service = forceConnect(CONNECT_TIMEOUT_MS)
+        val service = enabler.forceConnect(A11yEnabler.CONNECT_TIMEOUT_MS)
         assertNotNull(
-            "a11y service never connected. enabled=" +
-                shell("settings get secure enabled_accessibility_services").trim() +
-                " a11yEnabled=" + shell("settings get secure accessibility_enabled").trim(),
+            "a11y service never connected. enabled=" + enabler.enabledServices(),
             service,
         )
 
         TapHarnessActivity.resetClicks()
-        launchHarness()
+        enabler.launchHarness(A11yEnabler.HARNESS_TIMEOUT_MS)
 
         // Rect spanning the central area of the screen -> its center lands on the
         // full-bleed harness button regardless of resolution/orientation.
@@ -109,83 +73,17 @@ class RegulatorAccessibilityServiceTest {
         )
     }
 
-    /**
-     * Bind the service into THIS (already-running, instrumented) process. AMS
-     * binds reliably for a freshly-spawned process, but for a live one the bind
-     * needs a clean accessibility_enabled 0 -> 1 transition with the list+appop
-     * already in place, and sometimes a re-toggle — so each round re-writes the
-     * list (retried until it sticks past the restricted gate), toggles, then polls
-     * the instance before re-toggling.
-     */
-    private fun forceConnect(timeoutMs: Long): RegulatorAccessibilityService? {
-        val deadline = SystemClock.uptimeMillis() + timeoutMs
-        while (SystemClock.uptimeMillis() < deadline) {
-            shell("settings put secure accessibility_enabled 0")
-            SystemClock.sleep(300L)
-            if (!writeEnabledServicesSticks(component)) continue
-            shell("settings put secure accessibility_enabled 1")
-            val roundEnd = SystemClock.uptimeMillis() + RETOGGLE_INTERVAL_MS
-            while (SystemClock.uptimeMillis() < roundEnd) {
-                RegulatorAccessibilityService.instance?.let { return it }
-                SystemClock.sleep(200L)
-            }
-        }
-        return RegulatorAccessibilityService.instance
-    }
-
-    private fun writeEnabledServicesSticks(target: String): Boolean {
-        repeat(WRITE_RETRIES) {
-            shell("settings put secure enabled_accessibility_services $target")
-            if (shell("settings get secure enabled_accessibility_services").trim() == target) {
-                return true
-            }
-            SystemClock.sleep(300L)
-        }
-        return false
-    }
-
-    private fun launchHarness() {
-        TapHarnessActivity.resumed = false
-        val intent = Intent(context, TapHarnessActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-        context.startActivity(intent)
-        // Wait until the harness window actually OWNS input focus: a gesture
-        // injected before the window is the current focus is not delivered.
-        val deadline = SystemClock.uptimeMillis() + HARNESS_TIMEOUT_MS
-        while (SystemClock.uptimeMillis() < deadline) {
-            if (TapHarnessActivity.resumed && harnessHasInputFocus()) break
-            SystemClock.sleep(150L)
-        }
-        SystemClock.sleep(500L)
-    }
-
-    private fun harnessHasInputFocus(): Boolean =
-        shell("dumpsys window").lineSequence()
-            .filter { it.contains("mCurrentFocus") }
-            .any { it.contains("TapHarnessActivity") }
-
     private fun awaitClicks(min: Int, timeoutMs: Long): Boolean {
-        val deadline = SystemClock.uptimeMillis() + timeoutMs
-        while (SystemClock.uptimeMillis() < deadline) {
+        val deadline = android.os.SystemClock.uptimeMillis() + timeoutMs
+        while (android.os.SystemClock.uptimeMillis() < deadline) {
             if (TapHarnessActivity.clicks.get() >= min) return true
-            SystemClock.sleep(100L)
+            android.os.SystemClock.sleep(100L)
         }
         return TapHarnessActivity.clicks.get() >= min
     }
 
-    private fun shell(cmd: String): String {
-        val pfd = uiAutomation.executeShellCommand(cmd)
-        ParcelFileDescriptor.AutoCloseInputStream(pfd).use { stream ->
-            return stream.readBytes().toString(Charsets.UTF_8)
-        }
-    }
-
     private companion object {
-        const val CONNECT_TIMEOUT_MS = 30_000L
-        const val RETOGGLE_INTERVAL_MS = 5_000L
-        const val HARNESS_TIMEOUT_MS = 5_000L
         const val GESTURE_TIMEOUT_MS = 5_000L
         const val CLICK_TIMEOUT_MS = 5_000L
-        const val WRITE_RETRIES = 8
     }
 }
