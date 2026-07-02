@@ -26,8 +26,12 @@ Important parameters:
 - `-IntervalMinutes` defaults to `8` for fallback/low-temperature checks.
 - `-NormalIntervalMinutes` defaults to `4` for safeband checks.
 - `-HighIntervalMinutes` defaults to `4` for high-temperature checks.
+- `-CriticalZoneIntervalMinutes` defaults to `2` when the adjusted setpoint is in the critical zone.
 - `-SafebandLow` defaults to `24.7`.
 - `-SafebandHigh` defaults to `24.9`.
+- `-SetpointFloor` defaults to `25`.
+- `-SetpointCeiling` defaults to `28`.
+- `-CriticalZoneSetpoints` defaults to `@(25, 28)`.
 - `-MaxCycles 0` means run forever.
 - `-ColdBoot` kills and cold-boots the AVD every cycle; default mode reuses the emulator.
 - `-Init` prepares only the automatable runtime pieces and then exits.
@@ -100,8 +104,9 @@ Keep OCR crop boxes tight around digits.
 For temperature `T` and defaults `-SafebandLow 24.7 -SafebandHigh 24.9`:
 
 - `24.7 <= T <= 24.9`: no action; wait `-NormalIntervalMinutes`.
-- `T < 24.7`: open AC and, if powered on, increase setpoint by 1 up to `28`; wait `-IntervalMinutes`.
-- `T > 24.9`: open AC and, if powered on, decrease setpoint by 1 down to `26`; wait `-HighIntervalMinutes`.
+- `T < 24.7`: open AC and, if powered on, increase setpoint by 1 up to `-SetpointCeiling`; wait `-IntervalMinutes`.
+- `T > 24.9`: open AC and, if powered on, decrease setpoint by 1 down to `-SetpointFloor`; wait `-HighIntervalMinutes`.
+- If the final setpoint after the adjustment path is in `-CriticalZoneSetpoints`, wait `-CriticalZoneIntervalMinutes` instead.
 - If AC is powered off, do not change the setpoint and wait the interval chosen by the temperature state.
 
 Do not change thresholds, setpoint caps, shortcut labels, package names, or emulator launch flags unless explicitly requested.

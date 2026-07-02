@@ -5,6 +5,8 @@
 .DESCRIPTION
   Runs full cycles with dynamic intervals: low temperature defaults to an 8-minute
   next check; normal/high temperature defaults to a 4-minute next check.
+  If the adjusted setpoint is in the configured critical zone, the next check
+  defaults to 2 minutes.
     1. Ensure the emulator is running. The default mode reuses an existing emulator
        and starts one only when needed.
        With -ColdBoot, every cycle kills all AVDs and cold-boots headless with
@@ -13,8 +15,8 @@
        current temperature with tesseract OCR.
     3. If safeband low <= temperature <= safeband high: take no action.
     4. Open the Haier bedroom AC shortcut. If AC is powered off: take no action.
-    5. If temperature is below the safeband: increase setpoint by 1, capped at 28.
-    6. If temperature is above the safeband: decrease setpoint by 1, floored at 26.
+    5. If temperature is below the safeband: increase setpoint by 1, capped at the ceiling.
+    6. If temperature is above the safeband: decrease setpoint by 1, floored at the floor.
 
   The temperature and setpoint are rendered graphics, not text nodes, so OCR uses:
   screenshot -> crop -> upscale -> tesseract. AC power state is inferred from the
@@ -33,8 +35,12 @@ param(
     [int]   $IntervalMinutes = 8,
     [int]   $NormalIntervalMinutes = 4,
     [int]   $HighIntervalMinutes = 4,
+    [int]   $CriticalZoneIntervalMinutes = 2,
     [double]$SafebandLow    = 24.7,
     [double]$SafebandHigh   = 24.9,
+    [int]   $SetpointFloor   = 25,
+    [int]   $SetpointCeiling = 28,
+    [int[]] $CriticalZoneSetpoints = @(25, 28),
     [string]$Serial          = 'emulator-5554',
     [string]$Sdk             = "$env:LOCALAPPDATA\Android\Sdk",
     [int]   $MaxCycles       = 0,   # 0 = infinite loop
@@ -46,12 +52,28 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$APP_SETPOINT_MIN = 16
+$APP_SETPOINT_MAX = 30
 if ([double]::IsNaN($SafebandLow) -or [double]::IsNaN($SafebandHigh) -or
     [double]::IsInfinity($SafebandLow) -or [double]::IsInfinity($SafebandHigh)) {
     throw 'Safeband bounds must be finite numbers.'
 }
+if ($SetpointFloor -lt $APP_SETPOINT_MIN -or $SetpointCeiling -gt $APP_SETPOINT_MAX) {
+    throw "Setpoint range must stay within the supported app range [$APP_SETPOINT_MIN, $APP_SETPOINT_MAX]."
+}
 if ($SafebandLow -gt $SafebandHigh) {
     throw '-SafebandLow must be less than or equal to -SafebandHigh.'
+}
+if ($SetpointFloor -gt $SetpointCeiling) {
+    throw '-SetpointFloor must be less than or equal to -SetpointCeiling.'
+}
+foreach ($criticalSetpoint in $CriticalZoneSetpoints) {
+    if ($criticalSetpoint -lt $APP_SETPOINT_MIN -or $criticalSetpoint -gt $APP_SETPOINT_MAX) {
+        throw "-CriticalZoneSetpoints values must stay within the supported app range [$APP_SETPOINT_MIN, $APP_SETPOINT_MAX]."
+    }
+}
+if ($CriticalZoneIntervalMinutes -lt 1) {
+    throw '-CriticalZoneIntervalMinutes must be at least 1.'
 }
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -93,8 +115,9 @@ $AC_SHORTCUT_LABEL   = (-join ([char[]]@(0x4E3B, 0x5367, 0x7A7A, 0x8C03)))
 # Decision thresholds.
 $SAFEBAND_LOW  = $SafebandLow   # [SAFEBAND_LOW, SAFEBAND_HIGH] => no action
 $SAFEBAND_HIGH = $SafebandHigh
-$SET_FLOOR     = 26     # Cooling setpoint floor.
-$SET_CEIL      = 28     # Automation setpoint ceiling.
+$SET_FLOOR     = $SetpointFloor
+$SET_CEIL      = $SetpointCeiling
+$CRITICAL_ZONE_SETPOINTS = @($CriticalZoneSetpoints)
 $NEXT_INTERVAL_MINUTES = $IntervalMinutes
 
 # ---------------------------------------------------------------------------
@@ -107,10 +130,18 @@ function Log([string]$msg) {
 function Write-StartupInfo {
     Log '=== AVD AC regulator startup ==='
     Log ("AVD={0}; Serial={1}; Calibration={2}; Init={3}; ColdBoot={4}; MaxCycles={5}" -f $AvdName, $Serial, $Calibration, $Init.IsPresent, $ColdBoot.IsPresent, $MaxCycles)
-    Log ("Intervals: default/low={0} min; safeband={1} min; high={2} min" -f $IntervalMinutes, $NormalIntervalMinutes, $HighIntervalMinutes)
+    Log ("Intervals: default/low={0} min; safeband={1} min; high={2} min; critical-zone={3} min" -f $IntervalMinutes, $NormalIntervalMinutes, $HighIntervalMinutes, $CriticalZoneIntervalMinutes)
     Log ("Safeband: [{0}, {1}] C" -f $SAFEBAND_LOW, $SAFEBAND_HIGH)
+    Log ("Setpoint range: [{0}, {1}] C; critical zone: [{2}] C" -f $SET_FLOOR, $SET_CEIL, ($CRITICAL_ZONE_SETPOINTS -join ', '))
     Log ("Paths: SDK={0}; WorkDir={1}" -f $Sdk, $WorkDir)
     Log ("Tools: adb={0}; emulator={1}; tesseract={2}" -f $ADB, $EMU, $TESS)
+}
+
+function Use-CriticalZoneIntervalIfNeeded([Nullable[int]]$setpoint) {
+    if ($null -ne $setpoint -and $CRITICAL_ZONE_SETPOINTS -contains [int]$setpoint) {
+        $script:NEXT_INTERVAL_MINUTES = $CriticalZoneIntervalMinutes
+        Log ("  Setpoint {0} C is in critical zone [{1}] -> next check in {2} minutes." -f $setpoint, ($CRITICAL_ZONE_SETPOINTS -join ', '), $script:NEXT_INTERVAL_MINUTES)
+    }
 }
 
 function Adb { & $ADB -s $Serial @args }
@@ -376,7 +407,7 @@ function Read-Number([string]$src, [int[]]$box) {
 function Read-Setpoint([string]$shot) {
     $value = Read-Number -src $shot -box $script:CROP_SET
     if ($null -eq $value) { return $null }
-    if ($value -ge 16 -and $value -le $SET_CEIL) { return [int][Math]::Round($value) }
+    if ($value -ge $APP_SETPOINT_MIN -and $value -le $APP_SETPOINT_MAX) { return [int][Math]::Round($value) }
     Log "  [warn] Ignoring invalid setpoint OCR: $value"
     return $null
 }
@@ -562,25 +593,39 @@ function Invoke-Cycle {
         # Step 5: temperature below safeband -> setpoint +1.
         if ($null -ne $sp -and $sp -ge $SET_CEIL) {
             Log ("Step 5: already at ceiling {0} C -> no action." -f $SET_CEIL)
+            Use-CriticalZoneIntervalIfNeeded $sp
         } else {
+            $target = [int][Math]::Min($sp + 1, $SET_CEIL)
             Invoke-Tap $script:TAP_AC_PLUS
             Start-Sleep -Seconds 2
             Get-Screenshot $shot | Out-Null
             $new = Read-Setpoint $shot
             Log ("Step 5: temperature < {0} -> setpoint +1 ({1} -> {2}) C" -f $SAFEBAND_LOW, $sp, $new)
+            if ($null -eq $new) {
+                Log ("  [warn] Could not confirm adjusted setpoint; using intended target {0} C for interval selection." -f $target)
+                $new = $target
+            }
+            Use-CriticalZoneIntervalIfNeeded $new
         }
         Log ("Step 5: next check in {0} minutes." -f $script:NEXT_INTERVAL_MINUTES)
     }
     elseif ($t -gt $SAFEBAND_HIGH) {
-        # Step 6: temperature above safeband -> setpoint -1, floored at 26.
+        # Step 6: temperature above safeband -> setpoint -1.
         if ($null -ne $sp -and $sp -gt $SET_FLOOR) {
+            $target = [int][Math]::Max($sp - 1, $SET_FLOOR)
             Invoke-Tap $script:TAP_AC_MINUS
             Start-Sleep -Seconds 2
             Get-Screenshot $shot | Out-Null
             $new = Read-Setpoint $shot
             Log ("Step 6: temperature > {0} -> setpoint -1 ({1} -> {2}) C" -f $SAFEBAND_HIGH, $sp, $new)
+            if ($null -eq $new) {
+                Log ("  [warn] Could not confirm adjusted setpoint; using intended target {0} C for interval selection." -f $target)
+                $new = $target
+            }
+            Use-CriticalZoneIntervalIfNeeded $new
         } else {
             Log ("Step 6: already at floor {0} C -> no action." -f $SET_FLOOR)
+            Use-CriticalZoneIntervalIfNeeded $sp
         }
         Log ("Step 6: next check in {0} minutes." -f $script:NEXT_INTERVAL_MINUTES)
     }
