@@ -104,6 +104,15 @@ function Log([string]$msg) {
     Write-Host ("[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg)
 }
 
+function Write-StartupInfo {
+    Log '=== AVD AC regulator startup ==='
+    Log ("AVD={0}; Serial={1}; Calibration={2}; Init={3}; ColdBoot={4}; MaxCycles={5}" -f $AvdName, $Serial, $Calibration, $Init.IsPresent, $ColdBoot.IsPresent, $MaxCycles)
+    Log ("Intervals: default/low={0} min; safeband={1} min; high={2} min" -f $IntervalMinutes, $NormalIntervalMinutes, $HighIntervalMinutes)
+    Log ("Safeband: [{0}, {1}] C" -f $SAFEBAND_LOW, $SAFEBAND_HIGH)
+    Log ("Paths: SDK={0}; WorkDir={1}" -f $Sdk, $WorkDir)
+    Log ("Tools: adb={0}; emulator={1}; tesseract={2}" -f $ADB, $EMU, $TESS)
+}
+
 function Adb { & $ADB -s $Serial @args }
 
 function Invoke-Tap($pt) {
@@ -580,7 +589,7 @@ function Invoke-Cycle {
 # ---------------------------------------------------------------------------
 # -Init: prepare the automatable part of the runtime environment.
 #   Automated: SDK checks, tesseract+eng install, AVD GPU mode fix, target app checks.
-#   Manual (see scripts/AGENTS.md): create AVD, install/pair Tuya/Haier apps, place shortcuts, calibrate if needed.
+#   Manual (see repo-root AGENTS.md): create AVD, install/pair Tuya/Haier apps, place shortcuts, calibrate if needed.
 # ---------------------------------------------------------------------------
 function Test-Cmd([string]$n) { [bool](Get-Command $n -ErrorAction SilentlyContinue) }
 
@@ -650,9 +659,9 @@ function Invoke-Bootstrap {
 
     Log ''
     if ($todo.Count -eq 0) {
-        Log '=== -Init complete: core tools are ready. You can run: pwsh -File avd-ac-regulator.ps1 -MaxCycles 1 ==='
+        Log '=== -Init complete: core tools are ready. You can run: pwsh -File .\scripts\avd-ac-regulator.ps1 -MaxCycles 1 ==='
     } else {
-        Log '=== -Init still needs these manual actions (see scripts/AGENTS.md): ==='
+        Log '=== -Init still needs these manual actions (see repo-root AGENTS.md): ==='
         $i = 1; foreach ($it in $todo) { Log ("  {0}. {1}" -f $i, $it); $i++ }
     }
 }
@@ -660,10 +669,11 @@ function Invoke-Bootstrap {
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
+Write-StartupInfo
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 Resolve-AvdName
 if ($Init) { Invoke-Bootstrap; return }
-if (-not (Test-Path $ADB))  { throw "adb not found: $ADB. Run first: pwsh -File avd-ac-regulator.ps1 -Init" }
+if (-not (Test-Path $ADB))  { throw "adb not found: $ADB. Run first: pwsh -File .\scripts\avd-ac-regulator.ps1 -Init" }
 if (-not (Test-Path $EMU))  { throw "emulator not found: $EMU. Run first: -Init" }
 if (-not (Test-Path $TESS)) { throw "tesseract not found: $TESS. Run -Init first to install it automatically." }
 
