@@ -3,7 +3,7 @@
   AVD AC auto-regulation loop (standalone; does not use the appilot app).
 
 .DESCRIPTION
-  Runs full cycles with dynamic intervals: low temperature defaults to a 10-minute
+  Runs full cycles with dynamic intervals: low temperature defaults to an 8-minute
   next check; normal/high temperature defaults to a 4-minute next check.
     1. Ensure the emulator is running. The default mode reuses an existing emulator
        and starts one only when needed.
@@ -30,7 +30,7 @@
 [CmdletBinding()]
 param(
     [string]$AvdName        = 'Medium_Phone',
-    [int]   $IntervalMinutes = 10,
+    [int]   $IntervalMinutes = 8,
     [int]   $NormalIntervalMinutes = 4,
     [int]   $HighIntervalMinutes = 4,
     [double]$SafebandLow    = 24.7,

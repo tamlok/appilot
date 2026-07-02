@@ -23,7 +23,7 @@ Important parameters:
 - `-AvdName` defaults to `Medium_Phone`.
 - `-Serial` defaults to `emulator-5554`.
 - `-Sdk` defaults to `$env:LOCALAPPDATA\Android\Sdk`.
-- `-IntervalMinutes` defaults to `10` for fallback/low-temperature checks.
+- `-IntervalMinutes` defaults to `8` for fallback/low-temperature checks.
 - `-NormalIntervalMinutes` defaults to `4` for safeband checks.
 - `-HighIntervalMinutes` defaults to `4` for high-temperature checks.
 - `-SafebandLow` defaults to `24.7`.
