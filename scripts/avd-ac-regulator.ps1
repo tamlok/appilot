@@ -11,10 +11,10 @@
        software rendering and snapshots disabled.
     2. Open the Tuya temperature/humidity shortcut, capture a screenshot, and read
        current temperature with tesseract OCR.
-    3. If 24.7 < temperature <= 25: take no action.
+    3. If safeband low <= temperature <= safeband high: take no action.
     4. Open the Haier bedroom AC shortcut. If AC is powered off: take no action.
-    5. If temperature <= 24.7: increase setpoint by 1, capped at 28.
-    6. If temperature > 25: decrease setpoint by 1, floored at 26.
+    5. If temperature is below the safeband: increase setpoint by 1, capped at 28.
+    6. If temperature is above the safeband: decrease setpoint by 1, floored at 26.
 
   The temperature and setpoint are rendered graphics, not text nodes, so OCR uses:
   screenshot -> crop -> upscale -> tesseract. AC power state is inferred from the
@@ -33,6 +33,8 @@ param(
     [int]   $IntervalMinutes = 10,
     [int]   $NormalIntervalMinutes = 4,
     [int]   $HighIntervalMinutes = 4,
+    [double]$SafebandLow    = 24.7,
+    [double]$SafebandHigh   = 24.9,
     [string]$Serial          = 'emulator-5554',
     [string]$Sdk             = "$env:LOCALAPPDATA\Android\Sdk",
     [int]   $MaxCycles       = 0,   # 0 = infinite loop
@@ -44,6 +46,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ([double]::IsNaN($SafebandLow) -or [double]::IsNaN($SafebandHigh) -or
+    [double]::IsInfinity($SafebandLow) -or [double]::IsInfinity($SafebandHigh)) {
+    throw 'Safeband bounds must be finite numbers.'
+}
+if ($SafebandLow -gt $SafebandHigh) {
+    throw '-SafebandLow must be less than or equal to -SafebandHigh.'
+}
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System;
@@ -82,8 +91,8 @@ $TEMP_SHORTCUT_LABEL = (-join ([char[]]@(0x6E29, 0x6E7F, 0x5EA6, 0x62A5, 0x8B66,
 $AC_SHORTCUT_LABEL   = (-join ([char[]]@(0x4E3B, 0x5367, 0x7A7A, 0x8C03)))
 
 # Decision thresholds.
-$DEADBAND_LOW  = 24.7   # (DEADBAND_LOW, DEADBAND_HIGH] => no action
-$DEADBAND_HIGH = 25.0
+$SAFEBAND_LOW  = $SafebandLow   # [SAFEBAND_LOW, SAFEBAND_HIGH] => no action
+$SAFEBAND_HIGH = $SafebandHigh
 $SET_FLOOR     = 26     # Cooling setpoint floor.
 $SET_CEIL      = 28     # Automation setpoint ceiling.
 $NEXT_INTERVAL_MINUTES = $IntervalMinutes
@@ -519,14 +528,14 @@ function Invoke-Cycle {
     $t = Read-Temperature
     $script:NEXT_INTERVAL_MINUTES = $IntervalMinutes
 
-    # Step 3: deadband.
-    if ($t -gt $DEADBAND_LOW -and $t -le $DEADBAND_HIGH) {
+    # Step 3: safeband.
+    if ($t -ge $SAFEBAND_LOW -and $t -le $SAFEBAND_HIGH) {
         $script:NEXT_INTERVAL_MINUTES = $NormalIntervalMinutes
-        Log ("Step 3: {0} C is in deadband ({1}, {2}] -> no action; next check in {3} minutes." -f $t, $DEADBAND_LOW, $DEADBAND_HIGH, $script:NEXT_INTERVAL_MINUTES)
+        Log ("Step 3: {0} C is in safeband [{1}, {2}] -> no action; next check in {3} minutes." -f $t, $SAFEBAND_LOW, $SAFEBAND_HIGH, $script:NEXT_INTERVAL_MINUTES)
         return
     }
 
-    if ($t -gt $DEADBAND_HIGH) {
+    if ($t -gt $SAFEBAND_HIGH) {
         $script:NEXT_INTERVAL_MINUTES = $HighIntervalMinutes
     }
 
@@ -540,8 +549,8 @@ function Invoke-Cycle {
     if ($null -eq $sp) { throw 'Step 4: could not read AC setpoint' }
     Log ("Step 4: AC is on; current setpoint = {0} C" -f $sp)
 
-    if ($t -le $DEADBAND_LOW) {
-        # Step 5: temperature <= 24.7 -> setpoint +1.
+    if ($t -lt $SAFEBAND_LOW) {
+        # Step 5: temperature below safeband -> setpoint +1.
         if ($null -ne $sp -and $sp -ge $SET_CEIL) {
             Log ("Step 5: already at ceiling {0} C -> no action." -f $SET_CEIL)
         } else {
@@ -549,18 +558,18 @@ function Invoke-Cycle {
             Start-Sleep -Seconds 2
             Get-Screenshot $shot | Out-Null
             $new = Read-Setpoint $shot
-            Log ("Step 5: temperature <= 24.7 -> setpoint +1 ({0} -> {1}) C" -f $sp, $new)
+            Log ("Step 5: temperature < {0} -> setpoint +1 ({1} -> {2}) C" -f $SAFEBAND_LOW, $sp, $new)
         }
         Log ("Step 5: next check in {0} minutes." -f $script:NEXT_INTERVAL_MINUTES)
     }
-    elseif ($t -gt $DEADBAND_HIGH) {
-        # Step 6: temperature > 25 -> setpoint -1, floored at 26.
+    elseif ($t -gt $SAFEBAND_HIGH) {
+        # Step 6: temperature above safeband -> setpoint -1, floored at 26.
         if ($null -ne $sp -and $sp -gt $SET_FLOOR) {
             Invoke-Tap $script:TAP_AC_MINUS
             Start-Sleep -Seconds 2
             Get-Screenshot $shot | Out-Null
             $new = Read-Setpoint $shot
-            Log ("Step 6: temperature > 25 -> setpoint -1 ({0} -> {1}) C" -f $sp, $new)
+            Log ("Step 6: temperature > {0} -> setpoint -1 ({1} -> {2}) C" -f $SAFEBAND_HIGH, $sp, $new)
         } else {
             Log ("Step 6: already at floor {0} C -> no action." -f $SET_FLOOR)
         }

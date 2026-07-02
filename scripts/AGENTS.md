@@ -20,9 +20,10 @@ pwsh -File .\avd-ac-regulator.ps1 -MaxCycles 1   # run ONE cycle (verify)
 pwsh -File .\avd-ac-regulator.ps1                # run forever, one cycle / 10 min (reuse emulator)
 pwsh -File .\avd-ac-regulator.ps1 -ColdBoot      # kill+cold-boot the AVD every cycle (slower, pristine)
 ```
-Key params: `-AvdName` (default `Medium_Phone`), `-IntervalMinutes` (10), `-Serial`
-(`emulator-5554`), `-Sdk` (`$env:LOCALAPPDATA\Android\Sdk`), `-MaxCycles` (0 = infinite),
-`-ColdBoot` (switch), `-Init` (switch).
+Key params: `-AvdName` (default `Medium_Phone`), `-IntervalMinutes` (10),
+`-SafebandLow` (24.7), `-SafebandHigh` (24.9), `-Serial` (`emulator-5554`),
+`-Sdk` (`$env:LOCALAPPDATA\Android\Sdk`), `-MaxCycles` (0 = infinite), `-ColdBoot`
+(switch), `-Init` (switch).
 
 **Boot modes:**
 - **Default (reuse):** ensures the emulator is running (starts it once if not), then reuses it
@@ -209,8 +210,8 @@ opens the temperature panel (not a login page).
 
 ## Decision logic reference (do not change without instruction)
 
-Read temperature `T`; then:
-1. `24.7 < T ≤ 25` → do nothing (deadband).
+Read temperature `T`; then, with default `-SafebandLow 24.7 -SafebandHigh 24.9`:
+1. `24.7 ≤ T ≤ 24.9` → do nothing (safeband).
 2. else open AC; if **off** (`已关机`) → do nothing.
-3. `T ≤ 24.7` → setpoint **+1** (ceiling 30).
-4. `T > 25`  → setpoint **−1** (floor 26).
+3. `T < 24.7` → setpoint **+1** (ceiling 30).
+4. `T > 24.9` → setpoint **−1** (floor 26).
