@@ -54,7 +54,7 @@ an emulator is online, and prints any remaining manual actions.
 ## Runtime Facts
 
 - The target host may be a headless or GPU-less VM.
-- The emulator is intentionally launched headless with software rendering: `-no-window -gpu swiftshader_indirect -no-audio`.
+- The emulator is intentionally launched with a visible window and software rendering: `-gpu swiftshader_indirect -no-audio`.
 - Screenshots must stay binary-safe. The script uses `adb shell screencap -p /sdcard/x.png` plus `adb pull`.
 - Do not replace screenshot capture with `adb exec-out screencap -p` captured into a PowerShell variable; that corrupts PNG bytes.
 - On-screen numbers are rendered graphics, not text nodes, so OCR uses crop, glyph segmentation, upscaling, and Tesseract voting.

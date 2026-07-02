@@ -9,7 +9,7 @@
   defaults to 2 minutes.
     1. Ensure the emulator is running. The default mode reuses an existing emulator
        and starts one only when needed.
-       With -ColdBoot, every cycle kills all AVDs and cold-boots headless with
+       With -ColdBoot, every cycle kills all AVDs and cold-boots with
        software rendering and snapshots disabled.
     2. Open the Tuya temperature/humidity shortcut, capture a screenshot, and read
        current temperature with tesseract OCR.
@@ -436,17 +436,15 @@ function Test-AcOn([string]$shot) {
 # Step 1: kill all AVDs and cold boot.
 # ---------------------------------------------------------------------------
 function Start-EmulatorAndWait {
-    Log "Starting $AvdName (headless, no-snapshot) ..."
+    Log "Starting $AvdName (visible window, no-snapshot) ..."
     $log = Join-Path $WorkDir 'emu.log'
     # This host may be a Hyper-V VM without physical GPU or real display session:
-    #   -no-window: avoids GUI rendering crashes in headless/no-display VMs.
     #   -gpu swiftshader_indirect: software rendering; host GPU mode is unstable without a physical GPU.
     #   -no-audio: avoids missing-audio-device issues in VMs.
-    # Remove -no-window if running on a physical machine and you want to see the emulator window.
     Start-Process -FilePath $EMU `
         -ArgumentList @('-avd', $AvdName, '-no-snapshot-load', '-no-snapshot-save',
-                        '-no-window', '-no-boot-anim', '-gpu', 'swiftshader_indirect', '-no-audio') `
-        -RedirectStandardOutput $log -RedirectStandardError "$log.err" -WindowStyle Hidden | Out-Null
+                        '-no-boot-anim', '-gpu', 'swiftshader_indirect', '-no-audio') `
+        -RedirectStandardOutput $log -RedirectStandardError "$log.err" | Out-Null
 
     & $ADB -s $Serial wait-for-device
     $booted = ''
