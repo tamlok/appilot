@@ -118,6 +118,9 @@ $openAcCall = $runtimeText.IndexOf('$shot = Open-Ac', $cycleCall)
 Assert-True ($decisionCall -ge 0) 'runtime calls Get-CycleDecision'
 Assert-True ($openAcCall -gt $decisionCall) 'runtime decides before opening AC'
 Assert-False ($runtimeText -like '*Invoke-CriticalZoneRecoveryIfNeeded*') 'runtime removed recovery predicate helper'
+Assert-True ($runtimeText -like '*function Read-Temp*') 'runtime exposes Read-Temp wrapper'
+Assert-True ($runtimeText -like '*function Read-SetTemp*') 'runtime exposes Read-SetTemp wrapper'
+Assert-True ($runtimeText -like '*function Set-Temp*') 'runtime exposes Set-Temp wrapper'
 
 if ($script:Failures -gt 0) {
     throw ("{0} decision logic test(s) failed." -f $script:Failures)

@@ -459,6 +459,10 @@ function Read-Setpoint([string]$shot) {
     return $null
 }
 
+function Read-SetTemp([string]$Shot) {
+    return (Read-Setpoint $Shot)
+}
+
 function Test-AcOn([string]$shot) {
     # Sample blue-pixel ratio in the power button area. Blue means AC is on.
     $bmp = [System.Drawing.Bitmap]::FromFile($shot)
@@ -586,6 +590,10 @@ function Read-Temperature {
     throw 'Step 2: failed to read temperature after retries.'
 }
 
+function Read-Temp {
+    return (Read-Temperature)
+}
+
 # ---------------------------------------------------------------------------
 # Step 4: open Haier bedroom AC.
 # ---------------------------------------------------------------------------
@@ -620,6 +628,10 @@ function Move-SetpointToTarget([int]$CurrentSetpoint, [int]$TargetSetpoint, [str
     return (Read-Setpoint $Shot)
 }
 
+function Set-Temp([int]$CurrentSetpoint, [int]$TargetSetpoint, [string]$Shot) {
+    return (Move-SetpointToTarget $CurrentSetpoint $TargetSetpoint $Shot)
+}
+
 function Invoke-CriticalZoneRecovery([double]$Temperature) {
     $recordedSetpoint = [int]$script:LAST_SET_ACTION.Setpoint
 
@@ -630,7 +642,7 @@ function Invoke-CriticalZoneRecovery([double]$Temperature) {
         return
     }
 
-    $sp = Read-Setpoint $shot
+    $sp = Read-SetTemp $shot
     if ($null -eq $sp) {
         Log 'Step 4: could not read AC setpoint -> critical-zone recovery skipped.'
         return
@@ -643,7 +655,7 @@ function Invoke-CriticalZoneRecovery([double]$Temperature) {
     }
 
     $target = Get-NearestNonCriticalSetpoint -Setpoint ([int]$sp) -SetpointFloor $SET_FLOOR -SetpointCeiling $SET_CEIL
-    $new = Move-SetpointToTarget ([int]$sp) $target $shot
+    $new = Set-Temp ([int]$sp) $target $shot
     Log ("Step 4: safeband critical-zone recovery ({0} -> {1}) C; confirmed={2}" -f $sp, $target, $new)
     if ($null -ne $new -and [int]$new -eq $target) {
         Clear-LastSetAction ("Recovered critical setpoint to {0} C." -f $target)
@@ -656,7 +668,7 @@ function Invoke-CriticalZoneRecovery([double]$Temperature) {
 # One full cycle (steps 2-6).
 # ---------------------------------------------------------------------------
 function Invoke-Cycle([int]$CycleIndex) {
-    $t = Read-Temperature
+    $t = Read-Temp
     $decision = Get-CycleDecision -Temperature $t -LastSetAction $script:LAST_SET_ACTION -CycleIndex $CycleIndex -SafebandLow $SAFEBAND_LOW -SafebandHigh $SAFEBAND_HIGH -SetpointFloor $SET_FLOOR -SetpointCeiling $SET_CEIL -UnchangedThresholdCycles $UnchangedThresholdCycles
 
     if ($decision.Action -eq 'NoAction' -and $decision.TemperatureSide -eq 'safe') {
@@ -688,7 +700,7 @@ function Invoke-Cycle([int]$CycleIndex) {
         Log 'Step 4: AC is powered off -> no setpoint intervention occurred.'
         return
     }
-    $sp = Read-Setpoint $shot
+    $sp = Read-SetTemp $shot
     if ($null -eq $sp) { throw 'Step 4: could not read AC setpoint' }
     Log ("Step 4: AC is on; current setpoint = {0} C" -f $sp)
 
@@ -699,10 +711,7 @@ function Invoke-Cycle([int]$CycleIndex) {
             Set-LastSetAction $t ([int]$sp) $CycleIndex
         } else {
             $target = [int][Math]::Min($sp + 1, $SET_CEIL)
-            Invoke-Tap $script:TAP_AC_PLUS
-            Start-Sleep -Seconds 2
-            Get-Screenshot $shot | Out-Null
-            $new = Read-Setpoint $shot
+            $new = Set-Temp ([int]$sp) $target $shot
             Log ("Step 5: temperature < {0} -> setpoint +1 ({1} -> {2}) C" -f $SAFEBAND_LOW, $sp, $new)
             if ($null -eq $new) {
                 Log ("  [warn] Could not confirm adjusted setpoint; using intended target {0} C for intervention record." -f $target)
@@ -715,10 +724,7 @@ function Invoke-Cycle([int]$CycleIndex) {
         # Step 6: temperature above safeband -> setpoint -1.
         if ($null -ne $sp -and $sp -gt $SET_FLOOR) {
             $target = [int][Math]::Max($sp - 1, $SET_FLOOR)
-            Invoke-Tap $script:TAP_AC_MINUS
-            Start-Sleep -Seconds 2
-            Get-Screenshot $shot | Out-Null
-            $new = Read-Setpoint $shot
+            $new = Set-Temp ([int]$sp) $target $shot
             Log ("Step 6: temperature > {0} -> setpoint -1 ({1} -> {2}) C" -f $SAFEBAND_HIGH, $sp, $new)
             if ($null -eq $new) {
                 Log ("  [warn] Could not confirm adjusted setpoint; using intended target {0} C for intervention record." -f $target)
