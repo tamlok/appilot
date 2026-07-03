@@ -110,6 +110,9 @@ if ($IntervalMinutes -lt 1) {
 if ($UnchangedThresholdCycles -lt 0) {
     throw '-UnchangedThresholdCycles must be at least 0.'
 }
+
+. (Join-Path $PSScriptRoot 'avd-ac-regulator.logic.ps1')
+
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System;
@@ -173,68 +176,8 @@ function Write-StartupInfo {
 
 function Adb { & $ADB -s $Serial @args }
 
-function Test-InSafeband([double]$Temperature) {
-    return ($Temperature -ge $SAFEBAND_LOW -and $Temperature -le $SAFEBAND_HIGH)
-}
-
-function Test-CriticalSetpoint([int]$Setpoint) {
-    return ($Setpoint -le $SET_FLOOR -or $Setpoint -ge $SET_CEIL)
-}
-
-function Get-NearestNonCriticalSetpoint([int]$Setpoint) {
-    if ($Setpoint -le $SET_FLOOR) { return ($SET_FLOOR + 1) }
-    if ($Setpoint -ge $SET_CEIL) { return ($SET_CEIL - 1) }
-    return $Setpoint
-}
-
-function Get-TemperatureSide([double]$Temperature) {
-    if ($Temperature -lt $SAFEBAND_LOW) { return 'low' }
-    if ($Temperature -gt $SAFEBAND_HIGH) { return 'high' }
-    return 'safe'
-}
-
-function Test-SameTemperature([double]$A, [double]$B) {
-    return ([Math]::Round($A, 1) -eq [Math]::Round($B, 1))
-}
-
-function Test-TemperatureGettingWorse([double]$CurrentTemperature, $LastSetAction) {
-    $currentSide = Get-TemperatureSide $CurrentTemperature
-    if ($currentSide -eq 'safe') { return $false }
-    if ($null -eq $LastSetAction) { return $true }
-
-    $lastSide = Get-TemperatureSide ([double]$LastSetAction.Temperature)
-    if ($currentSide -ne $lastSide) { return $true }
-
-    if ($currentSide -eq 'low') { return ($CurrentTemperature -lt [double]$LastSetAction.Temperature) }
-    if ($currentSide -eq 'high') { return ($CurrentTemperature -gt [double]$LastSetAction.Temperature) }
-    return $false
-}
-
-function Test-TemperatureImproving([double]$CurrentTemperature, $LastSetAction) {
-    $currentSide = Get-TemperatureSide $CurrentTemperature
-    if ($currentSide -eq 'safe') { return $false }
-    if ($null -eq $LastSetAction) { return $false }
-
-    $lastSide = Get-TemperatureSide ([double]$LastSetAction.Temperature)
-    if ($currentSide -ne $lastSide) { return $false }
-
-    if ($currentSide -eq 'low') { return ($CurrentTemperature -gt [double]$LastSetAction.Temperature) }
-    if ($currentSide -eq 'high') { return ($CurrentTemperature -lt [double]$LastSetAction.Temperature) }
-    return $false
-}
-
-function Test-SameTemperatureEscalationDue([double]$CurrentTemperature, $LastSetAction, [int]$CycleIndex) {
-    if ($null -eq $LastSetAction) { return $false }
-    if (-not (Test-SameTemperature $CurrentTemperature ([double]$LastSetAction.Temperature))) { return $false }
-    return (($CycleIndex - [int]$LastSetAction.CycleIndex) -gt $UnchangedThresholdCycles)
-}
-
 function Set-LastSetAction([double]$Temperature, [int]$Setpoint, [int]$CycleIndex) {
-    $script:LAST_SET_ACTION = [pscustomobject]@{
-        Temperature = $Temperature
-        Setpoint = $Setpoint
-        CycleIndex = $CycleIndex
-    }
+    $script:LAST_SET_ACTION = New-SetActionRecord -Temperature $Temperature -Setpoint $Setpoint -CycleIndex $CycleIndex
     Log ("  Recorded setpoint intervention: temp={0} C; setpoint={1} C; cycle={2}" -f $Temperature, $Setpoint, $CycleIndex)
 }
 
@@ -677,32 +620,29 @@ function Move-SetpointToTarget([int]$CurrentSetpoint, [int]$TargetSetpoint, [str
     return (Read-Setpoint $Shot)
 }
 
-function Invoke-CriticalZoneRecoveryIfNeeded([double]$Temperature) {
-    if ($null -eq $script:LAST_SET_ACTION) { return $false }
-
+function Invoke-CriticalZoneRecovery([double]$Temperature) {
     $recordedSetpoint = [int]$script:LAST_SET_ACTION.Setpoint
-    if (-not (Test-CriticalSetpoint $recordedSetpoint)) { return $false }
 
     Log ("Step 3: {0} C is in safeband [{1}, {2}], but last setpoint {3} C is critical -> checking AC for recovery." -f $Temperature, $SAFEBAND_LOW, $SAFEBAND_HIGH, $recordedSetpoint)
     $shot = Open-Ac
     if (-not (Test-AcOn $shot)) {
         Log 'Step 4: AC is powered off -> critical-zone recovery skipped.'
-        return $true
+        return
     }
 
     $sp = Read-Setpoint $shot
     if ($null -eq $sp) {
         Log 'Step 4: could not read AC setpoint -> critical-zone recovery skipped.'
-        return $true
+        return
     }
 
-    if (-not (Test-CriticalSetpoint ([int]$sp))) {
+    if (-not (Test-CriticalSetpoint -Setpoint ([int]$sp) -SetpointFloor $SET_FLOOR -SetpointCeiling $SET_CEIL)) {
         Log ("Step 4: current setpoint {0} C is already non-critical -> no recovery tap needed." -f $sp)
         Clear-LastSetAction 'AC setpoint is already non-critical while temperature is in safeband.'
-        return $true
+        return
     }
 
-    $target = Get-NearestNonCriticalSetpoint ([int]$sp)
+    $target = Get-NearestNonCriticalSetpoint -Setpoint ([int]$sp) -SetpointFloor $SET_FLOOR -SetpointCeiling $SET_CEIL
     $new = Move-SetpointToTarget ([int]$sp) $target $shot
     Log ("Step 4: safeband critical-zone recovery ({0} -> {1}) C; confirmed={2}" -f $sp, $target, $new)
     if ($null -ne $new -and [int]$new -eq $target) {
@@ -710,7 +650,6 @@ function Invoke-CriticalZoneRecoveryIfNeeded([double]$Temperature) {
     } else {
         Log ("  [warn] Critical-zone recovery target {0} C was not confirmed; preserving intervention record." -f $target)
     }
-    return $true
 }
 
 # ---------------------------------------------------------------------------
@@ -718,20 +657,23 @@ function Invoke-CriticalZoneRecoveryIfNeeded([double]$Temperature) {
 # ---------------------------------------------------------------------------
 function Invoke-Cycle([int]$CycleIndex) {
     $t = Read-Temperature
+    $decision = Get-CycleDecision -Temperature $t -LastSetAction $script:LAST_SET_ACTION -CycleIndex $CycleIndex -SafebandLow $SAFEBAND_LOW -SafebandHigh $SAFEBAND_HIGH -SetpointFloor $SET_FLOOR -SetpointCeiling $SET_CEIL -UnchangedThresholdCycles $UnchangedThresholdCycles
 
-    # Step 3: safeband.
-    if (Test-InSafeband $t) {
-        if (Invoke-CriticalZoneRecoveryIfNeeded $t) { return }
+    if ($decision.Action -eq 'NoAction' -and $decision.TemperatureSide -eq 'safe') {
         Log ("Step 3: {0} C is in safeband [{1}, {2}] -> no action." -f $t, $SAFEBAND_LOW, $SAFEBAND_HIGH)
         return
     }
 
-    $gettingWorse = Test-TemperatureGettingWorse $t $script:LAST_SET_ACTION
-    $sameTempDue = Test-SameTemperatureEscalationDue $t $script:LAST_SET_ACTION $CycleIndex
-    if (-not $gettingWorse -and -not $sameTempDue) {
-        if (Test-TemperatureImproving $t $script:LAST_SET_ACTION) {
-            Update-LastSetActionObservation $t $CycleIndex
-        }
+    if ($decision.Action -eq 'RecoverCritical') {
+        Invoke-CriticalZoneRecovery $t
+        return
+    }
+
+    if ($decision.Action -eq 'UpdateObservation') {
+        Update-LastSetActionObservation $t $CycleIndex
+        return
+    }
+    if (-not $decision.ShouldOpenAc) {
         if ($null -ne $script:LAST_SET_ACTION) {
             Log ("Step 3: {0} C is out of safeband, but not worsening and same-temperature threshold is not due. Last intervention: temp={1} C; setpoint={2} C; cycle={3}." -f $t, $script:LAST_SET_ACTION.Temperature, $script:LAST_SET_ACTION.Setpoint, $script:LAST_SET_ACTION.CycleIndex)
         } else {

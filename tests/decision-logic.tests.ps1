@@ -2,6 +2,14 @@ $ErrorActionPreference = 'Stop'
 
 . "$PSScriptRoot\..\scripts\avd-ac-regulator.logic.ps1"
 
+$tokens = $null
+$errors = $null
+[System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '..\scripts\avd-ac-regulator.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+if ($errors.Count) {
+    $errors | ForEach-Object { Write-Host $_.Message }
+    throw 'Runtime script has parser errors.'
+}
+
 $script:Failures = 0
 
 function Assert-Equal($Expected, $Actual, [string]$Name) {
@@ -102,6 +110,14 @@ Assert-Equal 'DecreaseSetpoint' $d.Action 'opposite-side high temperature trigge
 $last = New-SetActionRecord -Temperature 25.0 -Setpoint 27 -CycleIndex 1
 $d = Decide -Temperature 24.7 -LastSetAction $last -CycleIndex 2
 Assert-Equal 'IncreaseSetpoint' $d.Action 'opposite-side low temperature triggers new intervention'
+
+$runtimeText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\scripts\avd-ac-regulator.ps1') -Raw
+$cycleCall = $runtimeText.IndexOf('function Invoke-Cycle')
+$decisionCall = $runtimeText.IndexOf('$decision = Get-CycleDecision', $cycleCall)
+$openAcCall = $runtimeText.IndexOf('$shot = Open-Ac', $cycleCall)
+Assert-True ($decisionCall -ge 0) 'runtime calls Get-CycleDecision'
+Assert-True ($openAcCall -gt $decisionCall) 'runtime decides before opening AC'
+Assert-False ($runtimeText -like '*Invoke-CriticalZoneRecoveryIfNeeded*') 'runtime removed recovery predicate helper'
 
 if ($script:Failures -gt 0) {
     throw ("{0} decision logic test(s) failed." -f $script:Failures)
