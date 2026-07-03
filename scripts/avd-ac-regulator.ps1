@@ -45,11 +45,48 @@ param(
     [string]$Sdk             = "$env:LOCALAPPDATA\Android\Sdk",
     [int]   $MaxCycles       = 0,   # 0 = infinite loop
     [string]$WorkDir         = "$env:LOCALAPPDATA\Temp\avd-ac-regulator",
-    [ValidateSet('auto', '1080x2400', '480x854')]
     [string]$Calibration     = 'auto',
+    [switch]$Help,           # Print supported options and exit.
     [switch]$Init,           # Prepare environment only, then exit without running cycles.
     [switch]$ColdBoot        # Kill all AVDs and cold-boot every cycle. Default reuses the emulator.
 )
+
+function Write-Usage {
+    @"
+AVD AC regulator
+
+Usage:
+  pwsh -File .\scripts\avd-ac-regulator.ps1 [options]
+
+Options:
+  -Help                                 Print this help text and exit. Default: false
+  -Init                                 Prepare runtime dependencies and exit. Default: false
+  -ColdBoot                             Kill all AVDs and cold-boot every cycle. Default: false
+  -AvdName <string>                     AVD name. Default: Medium_Phone
+  -Serial <string>                      adb serial. Default: emulator-5554
+  -Sdk <string>                         Android SDK path. Default: `$env:LOCALAPPDATA\Android\Sdk
+  -WorkDir <string>                     Temporary working directory. Default: `$env:LOCALAPPDATA\Temp\avd-ac-regulator
+  -Calibration <auto|1080x2400|480x854> Coordinate calibration profile. Default: auto
+  -MaxCycles <int>                      Number of cycles to run; 0 means forever. Default: 0
+  -IntervalMinutes <int>                Low-temperature/fallback interval. Default: 8
+  -NormalIntervalMinutes <int>          Safeband interval. Default: 4
+  -HighIntervalMinutes <int>            High-temperature interval. Default: 4
+  -CriticalZoneIntervalMinutes <int>    Interval when adjusted setpoint is critical. Default: 2
+  -SafebandLow <double>                 Lower no-action temperature bound. Default: 24.7
+  -SafebandHigh <double>                Upper no-action temperature bound. Default: 24.9
+  -SetpointFloor <int>                  Lowest AC setpoint used by automation. Default: 25
+  -SetpointCeiling <int>                Highest AC setpoint used by automation. Default: 28
+  -CriticalZoneSetpoints <int[]>        Critical setpoints. Default: 25, 28
+
+Examples:
+  pwsh -File .\scripts\avd-ac-regulator.ps1 -Help
+  pwsh -File .\scripts\avd-ac-regulator.ps1 -Init
+  pwsh -File .\scripts\avd-ac-regulator.ps1 -MaxCycles 1
+  pwsh -File .\scripts\avd-ac-regulator.ps1 -SafebandLow 24.5 -SafebandHigh 24.9
+"@
+}
+
+if ($Help) { Write-Usage; return }
 
 $ErrorActionPreference = 'Stop'
 $APP_SETPOINT_MIN = 16
@@ -57,6 +94,9 @@ $APP_SETPOINT_MAX = 30
 if ([double]::IsNaN($SafebandLow) -or [double]::IsNaN($SafebandHigh) -or
     [double]::IsInfinity($SafebandLow) -or [double]::IsInfinity($SafebandHigh)) {
     throw 'Safeband bounds must be finite numbers.'
+}
+if (@('auto', '1080x2400', '480x854') -notcontains $Calibration) {
+    throw "-Calibration must be one of: auto, 1080x2400, 480x854."
 }
 if ($SetpointFloor -lt $APP_SETPOINT_MIN -or $SetpointCeiling -gt $APP_SETPOINT_MAX) {
     throw "Setpoint range must stay within the supported app range [$APP_SETPOINT_MIN, $APP_SETPOINT_MAX]."
