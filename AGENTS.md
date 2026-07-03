@@ -23,15 +23,12 @@ Important parameters:
 - `-AvdName` defaults to `Medium_Phone`.
 - `-Serial` defaults to `emulator-5554`.
 - `-Sdk` defaults to `$env:LOCALAPPDATA\Android\Sdk`.
-- `-IntervalMinutes` defaults to `8` for fallback/low-temperature checks.
-- `-NormalIntervalMinutes` defaults to `4` for safeband checks.
-- `-HighIntervalMinutes` defaults to `4` for high-temperature checks.
-- `-CriticalZoneIntervalMinutes` defaults to `2` when the adjusted setpoint is in the critical zone.
-- `-SafebandLow` defaults to `24.7`.
+- `-IntervalMinutes` defaults to `1` for the unified cycle interval.
+- `-UnchangedThresholdCycles` defaults to `4`.
+- `-SafebandLow` defaults to `24.8`.
 - `-SafebandHigh` defaults to `24.9`.
 - `-SetpointFloor` defaults to `25`.
 - `-SetpointCeiling` defaults to `28`.
-- `-CriticalZoneSetpoints` defaults to `@(25, 28)`.
 - `-MaxCycles 0` means run forever.
 - `-ColdBoot` kills and cold-boots the AVD every cycle; default mode reuses the emulator.
 - `-Init` prepares only the automatable runtime pieces and then exits.
@@ -101,12 +98,17 @@ Keep OCR crop boxes tight around digits.
 
 ## Decision Logic
 
-For temperature `T` and defaults `-SafebandLow 24.7 -SafebandHigh 24.9`:
+For temperature `T` and defaults `-SafebandLow 24.8 -SafebandHigh 24.9`:
 
-- `24.7 <= T <= 24.9`: no action; wait `-NormalIntervalMinutes`.
-- `T < 24.7`: open AC and, if powered on, increase setpoint by 1 up to `-SetpointCeiling`; wait `-IntervalMinutes`.
-- `T > 24.9`: open AC and, if powered on, decrease setpoint by 1 down to `-SetpointFloor`; wait `-HighIntervalMinutes`.
-- If the final setpoint after the adjustment path is in `-CriticalZoneSetpoints`, wait `-CriticalZoneIntervalMinutes` instead.
-- If AC is powered off, do not change the setpoint and wait the interval chosen by the temperature state.
+- `24.8 <= T <= 24.9`: no action.
+- Every cycle waits `-IntervalMinutes`, default 1 minute.
+- The script keeps one in-memory last setpoint intervention record: `<cur_tmp, set_temp, set_cycle_idx>`.
+- `T < 24.8`: out of safeband on the low side. If there is no relevant last low-side record, or `T` is lower than the last recorded temperature, increase setpoint by 1 up to `-SetpointCeiling`.
+- `T > 24.9`: out of safeband on the high side. If there is no relevant last high-side record, or `T` is higher than the last recorded temperature, decrease setpoint by 1 down to `-SetpointFloor`.
+- If `T` equals the last recorded temperature, only try another one-step intervention when `(current cycle index - recorded cycle index) > -UnchangedThresholdCycles`.
+- If temperature is out of safeband but improving toward the safeband, do not open the AC and reset the cycle threshold baseline to the improving reading.
+- If temperature is out of safeband and unchanged below threshold, do not open the AC.
+- If AC is powered off, do not change the setpoint and do not update the last intervention record.
+- There is no critical-zone interval behavior.
 
 Do not change thresholds, setpoint caps, shortcut labels, package names, or emulator launch flags unless explicitly requested.

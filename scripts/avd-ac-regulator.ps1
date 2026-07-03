@@ -3,20 +3,20 @@
   AVD AC auto-regulation loop (standalone; does not use the appilot app).
 
 .DESCRIPTION
-  Runs full cycles with dynamic intervals: low temperature defaults to an 8-minute
-  next check; normal/high temperature defaults to a 4-minute next check.
-  If the adjusted setpoint is in the configured critical zone, the next check
-  defaults to 2 minutes.
+  Runs full cycles with a unified interval, defaulting to 1 minute, and an
+  increasing cycle index.
     1. Ensure the emulator is running. The default mode reuses an existing emulator
        and starts one only when needed.
        With -ColdBoot, every cycle kills all AVDs and cold-boots with
        software rendering and snapshots disabled.
     2. Open the Tuya temperature/humidity shortcut, capture a screenshot, and read
        current temperature with tesseract OCR.
-    3. If safeband low <= temperature <= safeband high: take no action.
-    4. Open the Haier bedroom AC shortcut. If AC is powered off: take no action.
-    5. If temperature is below the safeband: increase setpoint by 1, capped at the ceiling.
-    6. If temperature is above the safeband: decrease setpoint by 1, floored at the floor.
+     3. If safeband low <= temperature <= safeband high: take no action.
+     4. For out-of-safeband readings, adjust only when worsening or when unchanged
+        for more than the configured threshold cycles.
+     5. Open the Haier bedroom AC shortcut. If AC is powered off: take no action.
+     6. If temperature is below the safeband: increase setpoint by 1, capped at the ceiling.
+     7. If temperature is above the safeband: decrease setpoint by 1, floored at the floor.
 
   The temperature and setpoint are rendered graphics, not text nodes, so OCR uses:
   screenshot -> crop -> upscale -> tesseract. AC power state is inferred from the
@@ -32,15 +32,12 @@
 [CmdletBinding()]
 param(
     [string]$AvdName        = 'Medium_Phone',
-    [int]   $IntervalMinutes = 8,
-    [int]   $NormalIntervalMinutes = 4,
-    [int]   $HighIntervalMinutes = 4,
-    [int]   $CriticalZoneIntervalMinutes = 2,
-    [double]$SafebandLow    = 24.7,
+    [int]   $IntervalMinutes = 1,
+    [double]$SafebandLow    = 24.8,
     [double]$SafebandHigh   = 24.9,
     [int]   $SetpointFloor   = 25,
     [int]   $SetpointCeiling = 28,
-    [int[]] $CriticalZoneSetpoints = @(25, 28),
+    [int]   $UnchangedThresholdCycles = 4,
     [string]$Serial          = 'emulator-5554',
     [string]$Sdk             = "$env:LOCALAPPDATA\Android\Sdk",
     [int]   $MaxCycles       = 0,   # 0 = infinite loop
@@ -68,16 +65,12 @@ Options:
   -WorkDir <string>                     Temporary working directory. Default: `$env:LOCALAPPDATA\Temp\avd-ac-regulator
   -Calibration <auto|1080x2400|480x854> Coordinate calibration profile. Default: auto
   -MaxCycles <int>                      Number of cycles to run; 0 means forever. Default: 0
-  -IntervalMinutes <int>                Low-temperature/fallback interval. Default: 8
-  -NormalIntervalMinutes <int>          Safeband interval. Default: 4
-  -HighIntervalMinutes <int>            High-temperature interval. Default: 4
-  -CriticalZoneIntervalMinutes <int>    Interval when adjusted setpoint is critical. Default: 2
-  -SafebandLow <double>                 Lower no-action temperature bound. Default: 24.7
+  -IntervalMinutes <int>                Unified interval between cycles. Default: 1
+  -UnchangedThresholdCycles <int>       Same-temperature retry threshold in cycles. Default: 4
+  -SafebandLow <double>                 Lower no-action temperature bound. Default: 24.8
   -SafebandHigh <double>                Upper no-action temperature bound. Default: 24.9
   -SetpointFloor <int>                  Lowest AC setpoint used by automation. Default: 25
   -SetpointCeiling <int>                Highest AC setpoint used by automation. Default: 28
-  -CriticalZoneSetpoints <int[]>        Critical setpoints. Default: 25, 28
-
 Examples:
   pwsh -File .\scripts\avd-ac-regulator.ps1 -Help
   pwsh -File .\scripts\avd-ac-regulator.ps1 -Init
@@ -107,13 +100,11 @@ if ($SafebandLow -gt $SafebandHigh) {
 if ($SetpointFloor -gt $SetpointCeiling) {
     throw '-SetpointFloor must be less than or equal to -SetpointCeiling.'
 }
-foreach ($criticalSetpoint in $CriticalZoneSetpoints) {
-    if ($criticalSetpoint -lt $APP_SETPOINT_MIN -or $criticalSetpoint -gt $APP_SETPOINT_MAX) {
-        throw "-CriticalZoneSetpoints values must stay within the supported app range [$APP_SETPOINT_MIN, $APP_SETPOINT_MAX]."
-    }
+if ($IntervalMinutes -lt 1) {
+    throw '-IntervalMinutes must be at least 1.'
 }
-if ($CriticalZoneIntervalMinutes -lt 1) {
-    throw '-CriticalZoneIntervalMinutes must be at least 1.'
+if ($UnchangedThresholdCycles -lt 0) {
+    throw '-UnchangedThresholdCycles must be at least 0.'
 }
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -157,8 +148,7 @@ $SAFEBAND_LOW  = $SafebandLow   # [SAFEBAND_LOW, SAFEBAND_HIGH] => no action
 $SAFEBAND_HIGH = $SafebandHigh
 $SET_FLOOR     = $SetpointFloor
 $SET_CEIL      = $SetpointCeiling
-$CRITICAL_ZONE_SETPOINTS = @($CriticalZoneSetpoints)
-$NEXT_INTERVAL_MINUTES = $IntervalMinutes
+$LAST_SET_ACTION = $null
 
 # ---------------------------------------------------------------------------
 # Utilities
@@ -170,21 +160,76 @@ function Log([string]$msg) {
 function Write-StartupInfo {
     Log '=== AVD AC regulator startup ==='
     Log ("AVD={0}; Serial={1}; Calibration={2}; Init={3}; ColdBoot={4}; MaxCycles={5}" -f $AvdName, $Serial, $Calibration, $Init.IsPresent, $ColdBoot.IsPresent, $MaxCycles)
-    Log ("Intervals: default/low={0} min; safeband={1} min; high={2} min; critical-zone={3} min" -f $IntervalMinutes, $NormalIntervalMinutes, $HighIntervalMinutes, $CriticalZoneIntervalMinutes)
+    Log ("Interval: {0} min unified; unchanged threshold: {1} cycles" -f $IntervalMinutes, $UnchangedThresholdCycles)
     Log ("Safeband: [{0}, {1}] C" -f $SAFEBAND_LOW, $SAFEBAND_HIGH)
-    Log ("Setpoint range: [{0}, {1}] C; critical zone: [{2}] C" -f $SET_FLOOR, $SET_CEIL, ($CRITICAL_ZONE_SETPOINTS -join ', '))
+    Log ("Setpoint range: [{0}, {1}] C" -f $SET_FLOOR, $SET_CEIL)
     Log ("Paths: SDK={0}; WorkDir={1}" -f $Sdk, $WorkDir)
     Log ("Tools: adb={0}; emulator={1}; tesseract={2}" -f $ADB, $EMU, $TESS)
 }
 
-function Use-CriticalZoneIntervalIfNeeded([Nullable[int]]$setpoint) {
-    if ($null -ne $setpoint -and $CRITICAL_ZONE_SETPOINTS -contains [int]$setpoint) {
-        $script:NEXT_INTERVAL_MINUTES = $CriticalZoneIntervalMinutes
-        Log ("  Setpoint {0} C is in critical zone [{1}] -> next check in {2} minutes." -f $setpoint, ($CRITICAL_ZONE_SETPOINTS -join ', '), $script:NEXT_INTERVAL_MINUTES)
-    }
+function Adb { & $ADB -s $Serial @args }
+
+function Test-InSafeband([double]$Temperature) {
+    return ($Temperature -ge $SAFEBAND_LOW -and $Temperature -le $SAFEBAND_HIGH)
 }
 
-function Adb { & $ADB -s $Serial @args }
+function Get-TemperatureSide([double]$Temperature) {
+    if ($Temperature -lt $SAFEBAND_LOW) { return 'low' }
+    if ($Temperature -gt $SAFEBAND_HIGH) { return 'high' }
+    return 'safe'
+}
+
+function Test-SameTemperature([double]$A, [double]$B) {
+    return ([Math]::Round($A, 1) -eq [Math]::Round($B, 1))
+}
+
+function Test-TemperatureGettingWorse([double]$CurrentTemperature, $LastSetAction) {
+    $currentSide = Get-TemperatureSide $CurrentTemperature
+    if ($currentSide -eq 'safe') { return $false }
+    if ($null -eq $LastSetAction) { return $true }
+
+    $lastSide = Get-TemperatureSide ([double]$LastSetAction.Temperature)
+    if ($currentSide -ne $lastSide) { return $true }
+
+    if ($currentSide -eq 'low') { return ($CurrentTemperature -lt [double]$LastSetAction.Temperature) }
+    if ($currentSide -eq 'high') { return ($CurrentTemperature -gt [double]$LastSetAction.Temperature) }
+    return $false
+}
+
+function Test-TemperatureImproving([double]$CurrentTemperature, $LastSetAction) {
+    $currentSide = Get-TemperatureSide $CurrentTemperature
+    if ($currentSide -eq 'safe') { return $false }
+    if ($null -eq $LastSetAction) { return $false }
+
+    $lastSide = Get-TemperatureSide ([double]$LastSetAction.Temperature)
+    if ($currentSide -ne $lastSide) { return $false }
+
+    if ($currentSide -eq 'low') { return ($CurrentTemperature -gt [double]$LastSetAction.Temperature) }
+    if ($currentSide -eq 'high') { return ($CurrentTemperature -lt [double]$LastSetAction.Temperature) }
+    return $false
+}
+
+function Test-SameTemperatureEscalationDue([double]$CurrentTemperature, $LastSetAction, [int]$CycleIndex) {
+    if ($null -eq $LastSetAction) { return $false }
+    if (-not (Test-SameTemperature $CurrentTemperature ([double]$LastSetAction.Temperature))) { return $false }
+    return (($CycleIndex - [int]$LastSetAction.CycleIndex) -gt $UnchangedThresholdCycles)
+}
+
+function Set-LastSetAction([double]$Temperature, [int]$Setpoint, [int]$CycleIndex) {
+    $script:LAST_SET_ACTION = [pscustomobject]@{
+        Temperature = $Temperature
+        Setpoint = $Setpoint
+        CycleIndex = $CycleIndex
+    }
+    Log ("  Recorded setpoint intervention: temp={0} C; setpoint={1} C; cycle={2}" -f $Temperature, $Setpoint, $CycleIndex)
+}
+
+function Update-LastSetActionObservation([double]$Temperature, [int]$CycleIndex) {
+    if ($null -eq $script:LAST_SET_ACTION) { return }
+    $script:LAST_SET_ACTION.Temperature = $Temperature
+    $script:LAST_SET_ACTION.CycleIndex = $CycleIndex
+    Log ("  Temperature is moving toward safeband; reset retry threshold baseline: temp={0} C; setpoint={1} C; cycle={2}" -f $script:LAST_SET_ACTION.Temperature, $script:LAST_SET_ACTION.Setpoint, $script:LAST_SET_ACTION.CycleIndex)
+}
 
 function Invoke-Tap($pt) {
     $x = [int]$pt[0]
@@ -602,25 +647,33 @@ function Open-Ac {
 # ---------------------------------------------------------------------------
 # One full cycle (steps 2-6).
 # ---------------------------------------------------------------------------
-function Invoke-Cycle {
+function Invoke-Cycle([int]$CycleIndex) {
     $t = Read-Temperature
-    $script:NEXT_INTERVAL_MINUTES = $IntervalMinutes
 
     # Step 3: safeband.
-    if ($t -ge $SAFEBAND_LOW -and $t -le $SAFEBAND_HIGH) {
-        $script:NEXT_INTERVAL_MINUTES = $NormalIntervalMinutes
-        Log ("Step 3: {0} C is in safeband [{1}, {2}] -> no action; next check in {3} minutes." -f $t, $SAFEBAND_LOW, $SAFEBAND_HIGH, $script:NEXT_INTERVAL_MINUTES)
+    if (Test-InSafeband $t) {
+        Log ("Step 3: {0} C is in safeband [{1}, {2}] -> no action." -f $t, $SAFEBAND_LOW, $SAFEBAND_HIGH)
         return
     }
 
-    if ($t -gt $SAFEBAND_HIGH) {
-        $script:NEXT_INTERVAL_MINUTES = $HighIntervalMinutes
+    $gettingWorse = Test-TemperatureGettingWorse $t $script:LAST_SET_ACTION
+    $sameTempDue = Test-SameTemperatureEscalationDue $t $script:LAST_SET_ACTION $CycleIndex
+    if (-not $gettingWorse -and -not $sameTempDue) {
+        if (Test-TemperatureImproving $t $script:LAST_SET_ACTION) {
+            Update-LastSetActionObservation $t $CycleIndex
+        }
+        if ($null -ne $script:LAST_SET_ACTION) {
+            Log ("Step 3: {0} C is out of safeband, but not worsening and same-temperature threshold is not due. Last intervention: temp={1} C; setpoint={2} C; cycle={3}." -f $t, $script:LAST_SET_ACTION.Temperature, $script:LAST_SET_ACTION.Setpoint, $script:LAST_SET_ACTION.CycleIndex)
+        } else {
+            Log ("Step 3: {0} C is out of safeband, but no setpoint intervention is due." -f $t)
+        }
+        return
     }
 
     # Step 4: open AC and detect power state.
     $shot = Open-Ac
     if (-not (Test-AcOn $shot)) {
-        Log ("Step 4: AC is powered off -> no action; next check in {0} minutes." -f $script:NEXT_INTERVAL_MINUTES)
+        Log 'Step 4: AC is powered off -> no setpoint intervention occurred.'
         return
     }
     $sp = Read-Setpoint $shot
@@ -630,8 +683,8 @@ function Invoke-Cycle {
     if ($t -lt $SAFEBAND_LOW) {
         # Step 5: temperature below safeband -> setpoint +1.
         if ($null -ne $sp -and $sp -ge $SET_CEIL) {
-            Log ("Step 5: already at ceiling {0} C -> no action." -f $SET_CEIL)
-            Use-CriticalZoneIntervalIfNeeded $sp
+            Log ("Step 5: already at ceiling {0} C -> recording intervention gate." -f $SET_CEIL)
+            Set-LastSetAction $t ([int]$sp) $CycleIndex
         } else {
             $target = [int][Math]::Min($sp + 1, $SET_CEIL)
             Invoke-Tap $script:TAP_AC_PLUS
@@ -640,12 +693,11 @@ function Invoke-Cycle {
             $new = Read-Setpoint $shot
             Log ("Step 5: temperature < {0} -> setpoint +1 ({1} -> {2}) C" -f $SAFEBAND_LOW, $sp, $new)
             if ($null -eq $new) {
-                Log ("  [warn] Could not confirm adjusted setpoint; using intended target {0} C for interval selection." -f $target)
+                Log ("  [warn] Could not confirm adjusted setpoint; using intended target {0} C for intervention record." -f $target)
                 $new = $target
             }
-            Use-CriticalZoneIntervalIfNeeded $new
+            Set-LastSetAction $t ([int]$new) $CycleIndex
         }
-        Log ("Step 5: next check in {0} minutes." -f $script:NEXT_INTERVAL_MINUTES)
     }
     elseif ($t -gt $SAFEBAND_HIGH) {
         # Step 6: temperature above safeband -> setpoint -1.
@@ -657,15 +709,14 @@ function Invoke-Cycle {
             $new = Read-Setpoint $shot
             Log ("Step 6: temperature > {0} -> setpoint -1 ({1} -> {2}) C" -f $SAFEBAND_HIGH, $sp, $new)
             if ($null -eq $new) {
-                Log ("  [warn] Could not confirm adjusted setpoint; using intended target {0} C for interval selection." -f $target)
+                Log ("  [warn] Could not confirm adjusted setpoint; using intended target {0} C for intervention record." -f $target)
                 $new = $target
             }
-            Use-CriticalZoneIntervalIfNeeded $new
+            Set-LastSetAction $t ([int]$new) $CycleIndex
         } else {
-            Log ("Step 6: already at floor {0} C -> no action." -f $SET_FLOOR)
-            Use-CriticalZoneIntervalIfNeeded $sp
+            Log ("Step 6: already at floor {0} C -> recording intervention gate." -f $SET_FLOOR)
+            Set-LastSetAction $t ([int]$sp) $CycleIndex
         }
-        Log ("Step 6: next check in {0} minutes." -f $script:NEXT_INTERVAL_MINUTES)
     }
 }
 
@@ -764,17 +815,16 @@ $cycle = 0
 Log ("Mode: {0}" -f $(if ($ColdBoot) { 'cold boot every cycle (-ColdBoot)' } else { 'reuse running emulator (default, no cold boot)' }))
 while ($true) {
     $cycle++
-    $script:NEXT_INTERVAL_MINUTES = $IntervalMinutes
     Log "========== Cycle #$cycle =========="
     try {
         if ($ColdBoot) { Invoke-ColdBoot } else { Ensure-EmulatorRunning }
         Select-Calibration
-        Invoke-Cycle
+        Invoke-Cycle $cycle
         Log "Cycle #$cycle completed."
     } catch {
         Log "Cycle #$cycle failed: $($_.Exception.Message)"
     }
     if ($MaxCycles -gt 0 -and $cycle -ge $MaxCycles) { Log "Reached MaxCycles=$MaxCycles; exiting."; break }
-    Log "Waiting $NEXT_INTERVAL_MINUTES minutes before next cycle ..."
-    Start-Sleep -Seconds ($NEXT_INTERVAL_MINUTES * 60)
+    Log "Waiting $IntervalMinutes minutes before next cycle ..."
+    Start-Sleep -Seconds ($IntervalMinutes * 60)
 }
