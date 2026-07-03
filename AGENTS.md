@@ -100,7 +100,7 @@ Keep OCR crop boxes tight around digits.
 
 For temperature `T` and defaults `-SafebandLow 24.8 -SafebandHigh 24.9`:
 
-- `24.8 <= T <= 24.9`: no action.
+- `24.8 <= T <= 24.9`: no normal temperature correction; if the last recorded intervention setpoint is critical, perform critical-zone recovery first.
 - Every cycle waits `-IntervalMinutes`, default 1 minute.
 - The script keeps one in-memory last setpoint intervention record: `<cur_tmp, set_temp, set_cycle_idx>`.
 - `T < 24.8`: out of safeband on the low side. If there is no relevant last low-side record, or `T` is lower than the last recorded temperature, increase setpoint by 1 up to `-SetpointCeiling`.
@@ -109,6 +109,9 @@ For temperature `T` and defaults `-SafebandLow 24.8 -SafebandHigh 24.9`:
 - If temperature is out of safeband but improving toward the safeband, do not open the AC and reset the cycle threshold baseline to the improving reading.
 - If temperature is out of safeband and unchanged below threshold, do not open the AC.
 - If AC is powered off, do not change the setpoint and do not update the last intervention record.
+- Critical zone means any AC setpoint at or outside the automation range boundaries: `<= SetpointFloor` or `>= SetpointCeiling`.
+- When the current temperature comes back into the safeband and the last recorded intervention setpoint is critical, open the AC and move the actual setpoint to the nearest non-critical interior setpoint: `SetpointFloor + 1` for low critical values, or `SetpointCeiling - 1` for high critical values.
+- Clear the last intervention record only after the AC setpoint is confirmed non-critical; do not clear it when AC is off or setpoint OCR fails.
 - There is no critical-zone interval behavior.
 
 Do not change thresholds, setpoint caps, shortcut labels, package names, or emulator launch flags unless explicitly requested.

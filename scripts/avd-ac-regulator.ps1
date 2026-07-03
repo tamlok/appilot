@@ -11,7 +11,8 @@
        software rendering and snapshots disabled.
     2. Open the Tuya temperature/humidity shortcut, capture a screenshot, and read
        current temperature with tesseract OCR.
-     3. If safeband low <= temperature <= safeband high: take no action.
+     3. If safeband low <= temperature <= safeband high: recover any recorded
+        critical setpoint first, otherwise take no action.
      4. For out-of-safeband readings, adjust only when worsening or when unchanged
         for more than the configured threshold cycles.
      5. Open the Haier bedroom AC shortcut. If AC is powered off: take no action.
@@ -100,6 +101,9 @@ if ($SafebandLow -gt $SafebandHigh) {
 if ($SetpointFloor -gt $SetpointCeiling) {
     throw '-SetpointFloor must be less than or equal to -SetpointCeiling.'
 }
+if (($SetpointCeiling - $SetpointFloor) -lt 2) {
+    throw '-SetpointCeiling must be at least 2 greater than -SetpointFloor for critical-zone recovery.'
+}
 if ($IntervalMinutes -lt 1) {
     throw '-IntervalMinutes must be at least 1.'
 }
@@ -173,6 +177,16 @@ function Test-InSafeband([double]$Temperature) {
     return ($Temperature -ge $SAFEBAND_LOW -and $Temperature -le $SAFEBAND_HIGH)
 }
 
+function Test-CriticalSetpoint([int]$Setpoint) {
+    return ($Setpoint -le $SET_FLOOR -or $Setpoint -ge $SET_CEIL)
+}
+
+function Get-NearestNonCriticalSetpoint([int]$Setpoint) {
+    if ($Setpoint -le $SET_FLOOR) { return ($SET_FLOOR + 1) }
+    if ($Setpoint -ge $SET_CEIL) { return ($SET_CEIL - 1) }
+    return $Setpoint
+}
+
 function Get-TemperatureSide([double]$Temperature) {
     if ($Temperature -lt $SAFEBAND_LOW) { return 'low' }
     if ($Temperature -gt $SAFEBAND_HIGH) { return 'high' }
@@ -222,6 +236,11 @@ function Set-LastSetAction([double]$Temperature, [int]$Setpoint, [int]$CycleInde
         CycleIndex = $CycleIndex
     }
     Log ("  Recorded setpoint intervention: temp={0} C; setpoint={1} C; cycle={2}" -f $Temperature, $Setpoint, $CycleIndex)
+}
+
+function Clear-LastSetAction([string]$Reason) {
+    $script:LAST_SET_ACTION = $null
+    Log ("  Cleared setpoint intervention record: {0}" -f $Reason)
 }
 
 function Update-LastSetActionObservation([double]$Temperature, [int]$CycleIndex) {
@@ -644,6 +663,56 @@ function Open-Ac {
     return $shot
 }
 
+function Move-SetpointToTarget([int]$CurrentSetpoint, [int]$TargetSetpoint, [string]$Shot) {
+    if ($CurrentSetpoint -eq $TargetSetpoint) { return $CurrentSetpoint }
+
+    $tapPoint = $(if ($TargetSetpoint -gt $CurrentSetpoint) { $script:TAP_AC_PLUS } else { $script:TAP_AC_MINUS })
+    $steps = [Math]::Abs($TargetSetpoint - $CurrentSetpoint)
+    for ($i = 0; $i -lt $steps; $i++) {
+        Invoke-Tap $tapPoint
+        Start-Sleep -Seconds 2
+    }
+
+    Get-Screenshot $Shot | Out-Null
+    return (Read-Setpoint $Shot)
+}
+
+function Invoke-CriticalZoneRecoveryIfNeeded([double]$Temperature) {
+    if ($null -eq $script:LAST_SET_ACTION) { return $false }
+
+    $recordedSetpoint = [int]$script:LAST_SET_ACTION.Setpoint
+    if (-not (Test-CriticalSetpoint $recordedSetpoint)) { return $false }
+
+    Log ("Step 3: {0} C is in safeband [{1}, {2}], but last setpoint {3} C is critical -> checking AC for recovery." -f $Temperature, $SAFEBAND_LOW, $SAFEBAND_HIGH, $recordedSetpoint)
+    $shot = Open-Ac
+    if (-not (Test-AcOn $shot)) {
+        Log 'Step 4: AC is powered off -> critical-zone recovery skipped.'
+        return $true
+    }
+
+    $sp = Read-Setpoint $shot
+    if ($null -eq $sp) {
+        Log 'Step 4: could not read AC setpoint -> critical-zone recovery skipped.'
+        return $true
+    }
+
+    if (-not (Test-CriticalSetpoint ([int]$sp))) {
+        Log ("Step 4: current setpoint {0} C is already non-critical -> no recovery tap needed." -f $sp)
+        Clear-LastSetAction 'AC setpoint is already non-critical while temperature is in safeband.'
+        return $true
+    }
+
+    $target = Get-NearestNonCriticalSetpoint ([int]$sp)
+    $new = Move-SetpointToTarget ([int]$sp) $target $shot
+    Log ("Step 4: safeband critical-zone recovery ({0} -> {1}) C; confirmed={2}" -f $sp, $target, $new)
+    if ($null -ne $new -and [int]$new -eq $target) {
+        Clear-LastSetAction ("Recovered critical setpoint to {0} C." -f $target)
+    } else {
+        Log ("  [warn] Critical-zone recovery target {0} C was not confirmed; preserving intervention record." -f $target)
+    }
+    return $true
+}
+
 # ---------------------------------------------------------------------------
 # One full cycle (steps 2-6).
 # ---------------------------------------------------------------------------
@@ -652,6 +721,7 @@ function Invoke-Cycle([int]$CycleIndex) {
 
     # Step 3: safeband.
     if (Test-InSafeband $t) {
+        if (Invoke-CriticalZoneRecoveryIfNeeded $t) { return }
         Log ("Step 3: {0} C is in safeband [{1}, {2}] -> no action." -f $t, $SAFEBAND_LOW, $SAFEBAND_HIGH)
         return
     }
