@@ -16,6 +16,7 @@ pwsh -File .\scripts\avd-ac-regulator.ps1 -Init
 pwsh -File .\scripts\avd-ac-regulator.ps1 -MaxCycles 1
 pwsh -File .\scripts\avd-ac-regulator.ps1
 pwsh -File .\scripts\avd-ac-regulator.ps1 -ColdBoot
+pwsh -NoProfile -File .\tests\decision-logic.tests.ps1
 ```
 
 Important parameters:
@@ -55,6 +56,7 @@ an emulator is online, and prints any remaining manual actions.
 - Screenshots must stay binary-safe. The script uses `adb shell screencap -p /sdcard/x.png` plus `adb pull`.
 - Do not replace screenshot capture with `adb exec-out screencap -p` captured into a PowerShell variable; that corrupts PNG bytes.
 - On-screen numbers are rendered graphics, not text nodes, so OCR uses crop, glyph segmentation, upscaling, and Tesseract voting.
+- Pure decision logic lives in `scripts/avd-ac-regulator.logic.ps1` and is covered by dependency-free tests in `tests/decision-logic.tests.ps1`; emulator, OCR, screenshot, and tap actions stay in `scripts/avd-ac-regulator.ps1`.
 - Do not run two copies of the script against the same emulator serial at the same time.
 
 ## Required AVD And Apps
