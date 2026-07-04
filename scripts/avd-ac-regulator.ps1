@@ -46,7 +46,9 @@ param(
     [string]$Calibration     = 'auto',
     [switch]$Help,           # Print supported options and exit.
     [switch]$Init,           # Prepare environment only, then exit without running cycles.
-    [switch]$ColdBoot        # Kill all AVDs and cold-boot every cycle. Default reuses the emulator.
+    [switch]$ColdBoot,       # Kill all AVDs and cold-boot every cycle. Default reuses the emulator.
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$RemainingArgs
 )
 
 function Write-Usage {
@@ -70,6 +72,7 @@ Options:
   -UnchangedThresholdCycles <int>       Same-temperature retry threshold in cycles. Default: 4
   -SafebandLow <double>                 Lower no-action temperature bound. Default: 24.8
   -SafebandHigh <double>                Upper no-action temperature bound. Default: 24.9
+  -SafebandAt <HH:mm,low,high>          Repeatable time-based safeband entry. Example: '21:00,24.7,24.8'
   -SetpointFloor <int>                  Lowest AC setpoint used by automation. Default: 25
   -SetpointCeiling <int>                Highest AC setpoint used by automation. Default: 28
 Examples:
@@ -77,12 +80,38 @@ Examples:
   pwsh -File .\scripts\avd-ac-regulator.ps1 -Init
   pwsh -File .\scripts\avd-ac-regulator.ps1 -MaxCycles 1
   pwsh -File .\scripts\avd-ac-regulator.ps1 -SafebandLow 24.5 -SafebandHigh 24.9
+  pwsh -File .\scripts\avd-ac-regulator.ps1 -SafebandAt '21:00,24.7,24.8' -SafebandAt '00:00,24.8,24.9' -SafebandAt '04:30,25,25.2'
 "@
+}
+
+function Read-SafebandAtArguments {
+    param(
+        [string[]]$Arguments
+    )
+
+    $entries = @()
+    for ($i = 0; $i -lt @($Arguments).Count; $i++) {
+        $arg = $Arguments[$i]
+        if ($arg -ne '-SafebandAt') {
+            throw "Unknown argument '$arg'. Use -Help to see supported options."
+        }
+        if (($i + 1) -ge @($Arguments).Count) {
+            throw '-SafebandAt requires a value in HH:mm,low,high format.'
+        }
+
+        $entries += $Arguments[$i + 1]
+        $i++
+    }
+
+    return $entries
 }
 
 if ($Help) { Write-Usage; return }
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'avd-ac-regulator.logic.ps1')
+
+$SafebandAt = Read-SafebandAtArguments -Arguments $RemainingArgs
 $APP_SETPOINT_MIN = 16
 $APP_SETPOINT_MAX = 30
 if ([double]::IsNaN($SafebandLow) -or [double]::IsNaN($SafebandHigh) -or
@@ -110,8 +139,6 @@ if ($IntervalMinutes -lt 1) {
 if ($UnchangedThresholdCycles -lt 0) {
     throw '-UnchangedThresholdCycles must be at least 0.'
 }
-
-. (Join-Path $PSScriptRoot 'avd-ac-regulator.logic.ps1')
 
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -151,8 +178,12 @@ $TEMP_SHORTCUT_LABEL = (-join ([char[]]@(0x6E29, 0x6E7F, 0x5EA6, 0x62A5, 0x8B66,
 $AC_SHORTCUT_LABEL   = (-join ([char[]]@(0x4E3B, 0x5367, 0x7A7A, 0x8C03)))
 
 # Decision thresholds.
-$SAFEBAND_LOW  = $SafebandLow   # [SAFEBAND_LOW, SAFEBAND_HIGH] => no action
+$SAFEBAND_LOW  = $SafebandLow   # Default [SAFEBAND_LOW, SAFEBAND_HIGH] => no action
 $SAFEBAND_HIGH = $SafebandHigh
+$SAFEBAND_SCHEDULE = @()
+if (@($SafebandAt).Count -gt 0) {
+    $SAFEBAND_SCHEDULE = ConvertTo-SafebandSchedule -Entries $SafebandAt
+}
 $SET_FLOOR     = $SetpointFloor
 $SET_CEIL      = $SetpointCeiling
 $LAST_SET_ACTION = $null
@@ -168,7 +199,12 @@ function Write-StartupInfo {
     Log '=== AVD AC regulator startup ==='
     Log ("AVD={0}; Serial={1}; Calibration={2}; Init={3}; ColdBoot={4}; MaxCycles={5}" -f $AvdName, $Serial, $Calibration, $Init.IsPresent, $ColdBoot.IsPresent, $MaxCycles)
     Log ("Interval: {0} min unified; unchanged threshold: {1} cycles" -f $IntervalMinutes, $UnchangedThresholdCycles)
-    Log ("Safeband: [{0}, {1}] C" -f $SAFEBAND_LOW, $SAFEBAND_HIGH)
+    if (@($SAFEBAND_SCHEDULE).Count -eq 0) {
+        Log ("Safeband: [{0}, {1}] C" -f $SAFEBAND_LOW, $SAFEBAND_HIGH)
+    } else {
+        $scheduleText = (@($SAFEBAND_SCHEDULE) | ForEach-Object { ("{0:hh\:mm} -> [{1}, {2}] C" -f $_.After, $_.Low, $_.High) }) -join '; '
+        Log ("Safeband schedule: {0}" -f $scheduleText)
+    }
     Log ("Setpoint range: [{0}, {1}] C" -f $SET_FLOOR, $SET_CEIL)
     Log ("Paths: SDK={0}; WorkDir={1}" -f $Sdk, $WorkDir)
     Log ("Tools: adb={0}; emulator={1}; tesseract={2}" -f $ADB, $EMU, $TESS)
@@ -184,6 +220,18 @@ function Set-LastSetAction([double]$Temperature, [int]$Setpoint, [int]$CycleInde
 function Clear-LastSetAction([string]$Reason) {
     $script:LAST_SET_ACTION = $null
     Log ("  Cleared setpoint intervention record: {0}" -f $Reason)
+}
+
+function Get-CurrentSafeband {
+    if (@($script:SAFEBAND_SCHEDULE).Count -eq 0) {
+        return [pscustomobject]@{
+            After = $null
+            Low = $script:SAFEBAND_LOW
+            High = $script:SAFEBAND_HIGH
+        }
+    }
+
+    return Get-ActiveSafeband -Schedule $script:SAFEBAND_SCHEDULE -CurrentTime (Get-Date).TimeOfDay
 }
 
 function Update-LastSetActionObservation([double]$Temperature, [int]$CycleIndex) {
@@ -632,10 +680,10 @@ function Set-Temp([int]$CurrentSetpoint, [int]$TargetSetpoint, [string]$Shot) {
     return (Move-SetpointToTarget $CurrentSetpoint $TargetSetpoint $Shot)
 }
 
-function Invoke-CriticalZoneRecovery([double]$Temperature) {
+function Invoke-CriticalZoneRecovery([double]$Temperature, [double]$SafebandLow, [double]$SafebandHigh) {
     $recordedSetpoint = [int]$script:LAST_SET_ACTION.Setpoint
 
-    Log ("Step 3: {0} C is in safeband [{1}, {2}], but last setpoint {3} C is critical -> checking AC for recovery." -f $Temperature, $SAFEBAND_LOW, $SAFEBAND_HIGH, $recordedSetpoint)
+    Log ("Step 3: {0} C is in safeband [{1}, {2}], but last setpoint {3} C is critical -> checking AC for recovery." -f $Temperature, $SafebandLow, $SafebandHigh, $recordedSetpoint)
     $shot = Open-Ac
     if (-not (Test-AcOn $shot)) {
         Log 'Step 4: AC is powered off -> critical-zone recovery skipped.'
@@ -669,15 +717,21 @@ function Invoke-CriticalZoneRecovery([double]$Temperature) {
 # ---------------------------------------------------------------------------
 function Invoke-Cycle([int]$CycleIndex) {
     $t = Read-Temp
-    $decision = Get-CycleDecision -Temperature $t -LastSetAction $script:LAST_SET_ACTION -CycleIndex $CycleIndex -SafebandLow $SAFEBAND_LOW -SafebandHigh $SAFEBAND_HIGH -SetpointFloor $SET_FLOOR -SetpointCeiling $SET_CEIL -UnchangedThresholdCycles $UnchangedThresholdCycles
+    $activeSafeband = Get-CurrentSafeband
+    $activeLow = [double]$activeSafeband.Low
+    $activeHigh = [double]$activeSafeband.High
+    if ($null -ne $activeSafeband.After) {
+        Log ("Step 3: active safeband since {0:hh\:mm}: [{1}, {2}] C" -f $activeSafeband.After, $activeLow, $activeHigh)
+    }
+    $decision = Get-CycleDecision -Temperature $t -LastSetAction $script:LAST_SET_ACTION -CycleIndex $CycleIndex -SafebandLow $activeLow -SafebandHigh $activeHigh -SetpointFloor $SET_FLOOR -SetpointCeiling $SET_CEIL -UnchangedThresholdCycles $UnchangedThresholdCycles
 
     if ($decision.Action -eq 'NoAction' -and $decision.TemperatureSide -eq 'safe') {
-        Log ("Step 3: {0} C is in safeband [{1}, {2}] -> no action." -f $t, $SAFEBAND_LOW, $SAFEBAND_HIGH)
+        Log ("Step 3: {0} C is in safeband [{1}, {2}] -> no action." -f $t, $activeLow, $activeHigh)
         return
     }
 
     if ($decision.Action -eq 'RecoverCritical') {
-        Invoke-CriticalZoneRecovery $t
+        Invoke-CriticalZoneRecovery -Temperature $t -SafebandLow $activeLow -SafebandHigh $activeHigh
         return
     }
 
@@ -704,7 +758,7 @@ function Invoke-Cycle([int]$CycleIndex) {
     if ($null -eq $sp) { throw 'Step 4: could not read AC setpoint' }
     Log ("Step 4: AC is on; current setpoint = {0} C" -f $sp)
 
-    if ($t -lt $SAFEBAND_LOW) {
+    if ($decision.TemperatureSide -eq 'low') {
         # Step 5: temperature below safeband -> setpoint +1.
         if ($null -ne $sp -and $sp -ge $SET_CEIL) {
             Log ("Step 5: already at ceiling {0} C -> recording intervention gate." -f $SET_CEIL)
@@ -712,7 +766,7 @@ function Invoke-Cycle([int]$CycleIndex) {
         } else {
             $target = [int][Math]::Min($sp + 1, $SET_CEIL)
             $new = Set-Temp ([int]$sp) $target $shot
-            Log ("Step 5: temperature < {0} -> setpoint +1 ({1} -> {2}) C" -f $SAFEBAND_LOW, $sp, $new)
+            Log ("Step 5: temperature < {0} -> setpoint +1 ({1} -> {2}) C" -f $activeLow, $sp, $new)
             if ($null -eq $new) {
                 Log ("  [warn] Could not confirm adjusted setpoint; using intended target {0} C for intervention record." -f $target)
                 $new = $target
@@ -720,12 +774,12 @@ function Invoke-Cycle([int]$CycleIndex) {
             Set-LastSetAction $t ([int]$new) $CycleIndex
         }
     }
-    elseif ($t -gt $SAFEBAND_HIGH) {
+    elseif ($decision.TemperatureSide -eq 'high') {
         # Step 6: temperature above safeband -> setpoint -1.
         if ($null -ne $sp -and $sp -gt $SET_FLOOR) {
             $target = [int][Math]::Max($sp - 1, $SET_FLOOR)
             $new = Set-Temp ([int]$sp) $target $shot
-            Log ("Step 6: temperature > {0} -> setpoint -1 ({1} -> {2}) C" -f $SAFEBAND_HIGH, $sp, $new)
+            Log ("Step 6: temperature > {0} -> setpoint -1 ({1} -> {2}) C" -f $activeHigh, $sp, $new)
             if ($null -eq $new) {
                 Log ("  [warn] Could not confirm adjusted setpoint; using intended target {0} C for intervention record." -f $target)
                 $new = $target

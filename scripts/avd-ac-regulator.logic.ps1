@@ -12,6 +12,77 @@ function New-SetActionRecord {
     }
 }
 
+function ConvertTo-SafebandSchedule {
+    param(
+        [string[]]$Entries
+    )
+
+    $records = @()
+    $seen = @{}
+    foreach ($entry in @($Entries)) {
+        $parts = @($entry -split ',') | ForEach-Object { $_.Trim() }
+        if ($parts.Count -ne 3) {
+            throw "Safeband schedule entry '$entry' must use format HH:mm,low,high."
+        }
+
+        $after = [TimeSpan]::Zero
+        if (-not [TimeSpan]::TryParseExact($parts[0], 'hh\:mm', [Globalization.CultureInfo]::InvariantCulture, [ref]$after)) {
+            throw "Safeband schedule time '$($parts[0])' must use HH:mm 24-hour format."
+        }
+
+        if ($seen.ContainsKey($after.Ticks)) {
+            throw "Duplicate safeband schedule time '$($parts[0])'."
+        }
+        $seen[$after.Ticks] = $true
+
+        $low = 0.0
+        $high = 0.0
+        if (-not [double]::TryParse($parts[1], [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$low)) {
+            throw "Safeband schedule low bound '$($parts[1])' must be a number."
+        }
+        if (-not [double]::TryParse($parts[2], [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$high)) {
+            throw "Safeband schedule high bound '$($parts[2])' must be a number."
+        }
+        if ([double]::IsNaN($low) -or [double]::IsInfinity($low) -or [double]::IsNaN($high) -or [double]::IsInfinity($high)) {
+            throw 'Safeband schedule bounds must be finite numbers.'
+        }
+        if ($low -gt $high) {
+            throw 'Safeband schedule low bound must be less than or equal to high bound.'
+        }
+
+        $records += [pscustomobject]@{
+            After = $after
+            Low = $low
+            High = $high
+        }
+    }
+
+    return @($records | Sort-Object -Property After)
+}
+
+function Get-ActiveSafeband {
+    param(
+        [Parameter(Mandatory = $true)]$Schedule,
+        [Parameter(Mandatory = $true)][TimeSpan]$CurrentTime
+    )
+
+    $entries = @($Schedule)
+    if ($entries.Count -eq 0) {
+        throw 'Safeband schedule must contain at least one entry.'
+    }
+
+    $active = $null
+    foreach ($entry in $entries) {
+        if ([TimeSpan]$entry.After -le $CurrentTime) {
+            $active = $entry
+        }
+    }
+    if ($null -eq $active) {
+        $active = $entries[$entries.Count - 1]
+    }
+    return $active
+}
+
 function Test-InSafeband {
     param(
         [Parameter(Mandatory = $true)][double]$Temperature,

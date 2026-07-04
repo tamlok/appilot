@@ -127,12 +127,15 @@ pwsh -File .\scripts\avd-ac-regulator.ps1 -Help
 | `-UnchangedThresholdCycles <int>` | `4` | Same-temperature retry threshold in cycles. |
 | `-SafebandLow <double>` | `24.8` | Lower no-action temperature bound. |
 | `-SafebandHigh <double>` | `24.9` | Upper no-action temperature bound. |
+| `-SafebandAt <HH:mm,low,high>` | none | Repeatable time-based safeband entry, for example `21:00,24.7,24.8`. When omitted, `-SafebandLow` and `-SafebandHigh` apply all night. |
 | `-SetpointFloor <int>` | `25` | Lowest AC setpoint used by automation. |
 | `-SetpointCeiling <int>` | `28` | Highest AC setpoint used by automation. |
 
 **Validation** (the script rejects out-of-range combinations up front):
 
 - Safeband bounds must be finite and `-SafebandLow <= -SafebandHigh`.
+- Each `-SafebandAt` entry must use `HH:mm,low,high`, with finite bounds,
+  `low <= high`, and no duplicate `HH:mm` times.
 - `-SetpointFloor <= -SetpointCeiling`, and the ceiling must be at least 2 above
   the floor (needed for critical-zone recovery).
 - The setpoint range must stay within the supported app range `[16, 30]`.
@@ -150,6 +153,12 @@ pwsh -File .\scripts\avd-ac-regulator.ps1 -ColdBoot
 
 # Widen the safeband.
 pwsh -File .\scripts\avd-ac-regulator.ps1 -SafebandLow 24.5 -SafebandHigh 24.9
+
+# Use different safebands during different local-time spans.
+pwsh -File .\scripts\avd-ac-regulator.ps1 `
+  -SafebandAt '21:00,24.7,24.8' `
+  -SafebandAt '00:00,24.8,24.9' `
+  -SafebandAt '04:30,25,25.2'
 ```
 
 > Do not run two copies of the script against the same emulator serial at once.
@@ -161,6 +170,11 @@ pwsh -File .\scripts\avd-ac-regulator.ps1 -SafebandLow 24.5 -SafebandHigh 24.9
 Defaults below assume `-SafebandLow 24.8 -SafebandHigh 24.9 -SetpointFloor 25
 -SetpointCeiling 28`. The script keeps a single in-memory record of the last
 setpoint intervention: `<current_temp, set_temp, set_cycle_index>`.
+
+If `-SafebandAt` entries are provided, each cycle first selects the active range
+from local host time. The active range is the latest schedule entry whose time is
+less than or equal to the current local time; before the first entry of the day,
+selection wraps to the last entry from the previous day.
 
 For a temperature `T`:
 
