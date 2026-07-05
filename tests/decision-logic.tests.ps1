@@ -61,12 +61,21 @@ Assert-False $d.ShouldOpenAc 'safeband without record should not open AC'
 $d = Decide -Temperature 24.85 -LastSetAction (New-SetActionRecord -Temperature 24.6 -Setpoint 26 -CycleIndex 1)
 Assert-Equal 'NoAction' $d.Action 'safeband with non-critical record does not open AC'
 
-$d = Decide -Temperature 24.85 -LastSetAction (New-SetActionRecord -Temperature 24.6 -Setpoint 25 -CycleIndex 1)
-Assert-Equal 'RecoverCritical' $d.Action 'safeband with low critical record recovers'
-Assert-True $d.ShouldOpenAc 'critical recovery should open AC'
+$d = Decide -Temperature 24.8 -LastSetAction (New-SetActionRecord -Temperature 25.2 -Setpoint 25 -CycleIndex 1)
+Assert-Equal 'RecoverCritical' $d.Action 'safeband low boundary with low critical record recovers'
+Assert-True $d.ShouldOpenAc 'low-boundary critical recovery should open AC'
 
-$d = Decide -Temperature 24.85 -LastSetAction (New-SetActionRecord -Temperature 25.2 -Setpoint 28 -CycleIndex 1)
-Assert-Equal 'RecoverCritical' $d.Action 'safeband with high critical record recovers'
+$d = Decide -Temperature 24.85 -LastSetAction (New-SetActionRecord -Temperature 25.2 -Setpoint 25 -CycleIndex 1)
+Assert-Equal 'NoAction' $d.Action 'safeband middle with low critical record waits'
+Assert-False $d.ShouldOpenAc 'low critical recovery away from low boundary should not open AC'
+
+$d = Decide -Temperature 24.9 -LastSetAction (New-SetActionRecord -Temperature 24.6 -Setpoint 28 -CycleIndex 1)
+Assert-Equal 'RecoverCritical' $d.Action 'safeband high boundary with high critical record recovers'
+Assert-True $d.ShouldOpenAc 'high-boundary critical recovery should open AC'
+
+$d = Decide -Temperature 24.85 -LastSetAction (New-SetActionRecord -Temperature 24.6 -Setpoint 28 -CycleIndex 1)
+Assert-Equal 'NoAction' $d.Action 'safeband middle with high critical record waits'
+Assert-False $d.ShouldOpenAc 'high critical recovery away from high boundary should not open AC'
 
 $d = Decide -Temperature 24.7
 Assert-Equal 'IncreaseSetpoint' $d.Action 'low temperature without record increases setpoint'

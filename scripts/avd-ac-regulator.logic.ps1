@@ -127,6 +127,27 @@ function Get-NearestNonCriticalSetpoint {
     return $Setpoint
 }
 
+function Test-CriticalRecoveryDue {
+    param(
+        [Parameter(Mandatory = $true)][double]$Temperature,
+        $LastSetAction,
+        [Parameter(Mandatory = $true)][double]$SafebandLow,
+        [Parameter(Mandatory = $true)][double]$SafebandHigh,
+        [Parameter(Mandatory = $true)][int]$SetpointFloor,
+        [Parameter(Mandatory = $true)][int]$SetpointCeiling
+    )
+
+    if ($null -eq $LastSetAction) { return $false }
+
+    $setpoint = [int]$LastSetAction.Setpoint
+    if (-not (Test-CriticalSetpoint -Setpoint $setpoint -SetpointFloor $SetpointFloor -SetpointCeiling $SetpointCeiling)) {
+        return $false
+    }
+
+    if ($setpoint -le $SetpointFloor) { return ($Temperature -eq $SafebandLow) }
+    return ($Temperature -eq $SafebandHigh)
+}
+
 function Test-SameTemperature {
     param(
         [Parameter(Mandatory = $true)][double]$A,
@@ -221,8 +242,8 @@ function Get-CycleDecision {
 
     $side = Get-TemperatureSide -Temperature $Temperature -SafebandLow $SafebandLow -SafebandHigh $SafebandHigh
     if ($side -eq 'safe') {
-        if ($null -ne $LastSetAction -and (Test-CriticalSetpoint -Setpoint ([int]$LastSetAction.Setpoint) -SetpointFloor $SetpointFloor -SetpointCeiling $SetpointCeiling)) {
-            return (New-CycleDecision -Action 'RecoverCritical' -Reason 'temperature in safeband and last setpoint is critical' -TemperatureSide $side -ShouldOpenAc $true)
+        if (Test-CriticalRecoveryDue -Temperature $Temperature -LastSetAction $LastSetAction -SafebandLow $SafebandLow -SafebandHigh $SafebandHigh -SetpointFloor $SetpointFloor -SetpointCeiling $SetpointCeiling) {
+            return (New-CycleDecision -Action 'RecoverCritical' -Reason 'temperature at safeband boundary and last setpoint is critical' -TemperatureSide $side -ShouldOpenAc $true)
         }
         return (New-CycleDecision -Action 'NoAction' -Reason 'temperature in safeband' -TemperatureSide $side)
     }
