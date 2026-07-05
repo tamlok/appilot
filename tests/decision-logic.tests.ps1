@@ -172,11 +172,53 @@ Assert-Throws { Get-ActiveSafeband -Schedule @() -CurrentTime ([TimeSpan]::Zero)
 
 $runtimeText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\scripts\avd-ac-regulator.ps1') -Raw
 $readmeText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\README.md') -Raw
+$runtimeAst = [System.Management.Automation.Language.Parser]::ParseInput($runtimeText, [ref]$tokens, [ref]$errors)
+$safebandArgumentParserAst = $runtimeAst.Find({
+    param($Ast)
+    $Ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $Ast.Name -eq 'Read-SafebandAtArguments'
+}, $true)
+$safebandArgumentParser = [scriptblock]::Create($safebandArgumentParserAst.Extent.Text)
+. $safebandArgumentParser
+$parsedSafebandArgs = Read-SafebandAtArguments -Arguments $null
+Assert-Equal 0 @($parsedSafebandArgs).Count 'SafebandAt parser accepts no remaining arguments'
 $cycleCall = $runtimeText.IndexOf('function Invoke-Cycle')
 $decisionCall = $runtimeText.IndexOf('$decision = Get-CycleDecision', $cycleCall)
 $openAcCall = $runtimeText.IndexOf('$shot = Open-Ac', $cycleCall)
+$criticalRecoveryCall = $runtimeText.IndexOf('function Invoke-CriticalZoneRecovery')
+$criticalRecoveryAcOff = $runtimeText.IndexOf("Log 'Step 4: AC is powered off -> critical-zone recovery skipped.'", $criticalRecoveryCall)
+$criticalRecoveryExit = $runtimeText.IndexOf("throw 'AC is powered off; exiting.'", $criticalRecoveryAcOff)
+$cycleAcOff = $runtimeText.IndexOf("Log 'Step 4: AC is powered off -> no setpoint intervention occurred.'", $cycleCall)
+$cycleExit = $runtimeText.IndexOf("throw 'AC is powered off; exiting.'", $cycleAcOff)
+$mainLoop = $runtimeText.IndexOf('while ($true)')
+$mainCatch = $runtimeText.IndexOf('} catch {', $mainLoop)
+$mainCatchAcOffCheck = $runtimeText.IndexOf('if ($_.Exception.Message -eq ''AC is powered off; exiting.'')', $mainCatch)
+$mainCatchExit = $(if ($mainCatchAcOffCheck -ge 0) { $runtimeText.IndexOf('exit 1', $mainCatchAcOffCheck) } else { -1 })
+$postCycleWait = $runtimeText.IndexOf('Waiting $IntervalMinutes minutes before next cycle', $mainCatch)
+$setpointRangeHelper = $runtimeText.IndexOf('function Assert-AllowedSetpoint')
+$outOfRangeSentinel = $(if ($setpointRangeHelper -ge 0) { $runtimeText.IndexOf("throw 'AC setpoint is outside allowed range; exiting.'", $setpointRangeHelper) } else { -1 })
+$criticalRecoverySetpointRead = $runtimeText.IndexOf('$sp = Read-SetTemp $shot', $criticalRecoveryCall)
+$criticalRecoverySetpointGuard = $runtimeText.IndexOf('Assert-AllowedSetpoint ([int]$sp)', $criticalRecoverySetpointRead)
+$cycleSetpointRead = $runtimeText.IndexOf('$sp = Read-SetTemp $shot', $cycleCall)
+$cycleSetpointGuard = $runtimeText.IndexOf('Assert-AllowedSetpoint ([int]$sp)', $cycleSetpointRead)
+$mainCatchOutOfRangeCheck = $runtimeText.IndexOf('if ($_.Exception.Message -eq ''AC setpoint is outside allowed range; exiting.'')', $mainCatch)
+$mainCatchOutOfRangeExit = $(if ($mainCatchOutOfRangeCheck -ge 0) { $runtimeText.IndexOf('exit 1', $mainCatchOutOfRangeCheck) } else { -1 })
 Assert-True ($decisionCall -ge 0) 'runtime calls Get-CycleDecision'
 Assert-True ($openAcCall -gt $decisionCall) 'runtime decides before opening AC'
+Assert-True ($criticalRecoveryAcOff -gt $criticalRecoveryCall) 'critical recovery detects AC off'
+Assert-True ($criticalRecoveryExit -gt $criticalRecoveryAcOff) 'critical recovery exits when AC is off'
+Assert-True ($cycleAcOff -gt $cycleCall) 'normal intervention detects AC off'
+Assert-True ($cycleExit -gt $cycleAcOff) 'normal intervention exits when AC is off'
+Assert-True ($mainCatchAcOffCheck -gt $mainCatch) 'main loop checks AC-off sentinel'
+Assert-True ($mainCatchExit -gt $mainCatchAcOffCheck) 'main loop exits on AC-off sentinel'
+Assert-True ($mainCatchExit -lt $postCycleWait) 'main loop exits before waiting for another cycle'
+Assert-True ($setpointRangeHelper -ge 0) 'runtime exposes setpoint range guard'
+Assert-True ($outOfRangeSentinel -gt $setpointRangeHelper) 'setpoint range guard exits on out-of-range setpoint'
+Assert-True ($criticalRecoverySetpointGuard -gt $criticalRecoverySetpointRead) 'critical recovery validates setpoint range after read'
+Assert-True ($cycleSetpointGuard -gt $cycleSetpointRead) 'normal intervention validates setpoint range after read'
+Assert-True ($mainCatchOutOfRangeCheck -gt $mainCatch) 'main loop checks out-of-range setpoint sentinel'
+Assert-True ($mainCatchOutOfRangeExit -gt $mainCatchOutOfRangeCheck) 'main loop exits on out-of-range setpoint sentinel'
+Assert-True ($mainCatchOutOfRangeExit -lt $postCycleWait) 'main loop exits on out-of-range setpoint before waiting for another cycle'
 Assert-False ($runtimeText -like '*Invoke-CriticalZoneRecoveryIfNeeded*') 'runtime removed recovery predicate helper'
 Assert-True ($runtimeText.Contains('[Parameter(ValueFromRemainingArguments = $true)]')) 'runtime captures repeated SafebandAt tokens'
 Assert-True ($runtimeText.Contains('Read-SafebandAtArguments')) 'runtime exposes SafebandAt raw argument parser'

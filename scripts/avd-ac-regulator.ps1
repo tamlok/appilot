@@ -15,7 +15,7 @@
         critical setpoint first, otherwise take no action.
      4. For out-of-safeband readings, adjust only when worsening or when unchanged
         for more than the configured threshold cycles.
-     5. Open the Haier bedroom AC shortcut. If AC is powered off: take no action.
+     5. Open the Haier bedroom AC shortcut. If AC is powered off: exit immediately.
      6. If temperature is below the safeband: increase setpoint by 1, capped at the ceiling.
      7. If temperature is above the safeband: decrease setpoint by 1, floored at the floor.
 
@@ -90,6 +90,7 @@ function Read-SafebandAtArguments {
     )
 
     $entries = @()
+    if (@($Arguments).Count -eq 0 -or $null -eq $Arguments) { return $entries }
     for ($i = 0; $i -lt @($Arguments).Count; $i++) {
         $arg = $Arguments[$i]
         if ($arg -ne '-SafebandAt') {
@@ -220,6 +221,13 @@ function Set-LastSetAction([double]$Temperature, [int]$Setpoint, [int]$CycleInde
 function Clear-LastSetAction([string]$Reason) {
     $script:LAST_SET_ACTION = $null
     Log ("  Cleared setpoint intervention record: {0}" -f $Reason)
+}
+
+function Assert-AllowedSetpoint([int]$Setpoint) {
+    if ($Setpoint -lt $SET_FLOOR -or $Setpoint -gt $SET_CEIL) {
+        Log ("Step 4: AC setpoint {0} C is outside allowed range [{1}, {2}] C." -f $Setpoint, $SET_FLOOR, $SET_CEIL)
+        throw 'AC setpoint is outside allowed range; exiting.'
+    }
 }
 
 function Get-CurrentSafeband {
@@ -687,7 +695,7 @@ function Invoke-CriticalZoneRecovery([double]$Temperature, [double]$SafebandLow,
     $shot = Open-Ac
     if (-not (Test-AcOn $shot)) {
         Log 'Step 4: AC is powered off -> critical-zone recovery skipped.'
-        return
+        throw 'AC is powered off; exiting.'
     }
 
     $sp = Read-SetTemp $shot
@@ -695,6 +703,7 @@ function Invoke-CriticalZoneRecovery([double]$Temperature, [double]$SafebandLow,
         Log 'Step 4: could not read AC setpoint -> critical-zone recovery skipped.'
         return
     }
+    Assert-AllowedSetpoint ([int]$sp)
 
     if (-not (Test-CriticalSetpoint -Setpoint ([int]$sp) -SetpointFloor $SET_FLOOR -SetpointCeiling $SET_CEIL)) {
         Log ("Step 4: current setpoint {0} C is already non-critical -> no recovery tap needed." -f $sp)
@@ -752,10 +761,11 @@ function Invoke-Cycle([int]$CycleIndex) {
     $shot = Open-Ac
     if (-not (Test-AcOn $shot)) {
         Log 'Step 4: AC is powered off -> no setpoint intervention occurred.'
-        return
+        throw 'AC is powered off; exiting.'
     }
     $sp = Read-SetTemp $shot
     if ($null -eq $sp) { throw 'Step 4: could not read AC setpoint' }
+    Assert-AllowedSetpoint ([int]$sp)
     Log ("Step 4: AC is on; current setpoint = {0} C" -f $sp)
 
     if ($decision.TemperatureSide -eq 'low') {
@@ -895,6 +905,12 @@ while ($true) {
         Log "Cycle #$cycle completed."
     } catch {
         Log "Cycle #$cycle failed: $($_.Exception.Message)"
+        if ($_.Exception.Message -eq 'AC is powered off; exiting.') {
+            exit 1
+        }
+        if ($_.Exception.Message -eq 'AC setpoint is outside allowed range; exiting.') {
+            exit 1
+        }
     }
     if ($MaxCycles -gt 0 -and $cycle -ge $MaxCycles) { Log "Reached MaxCycles=$MaxCycles; exiting."; break }
     Log "Waiting $IntervalMinutes minutes before next cycle ..."
